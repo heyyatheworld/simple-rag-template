@@ -1,0 +1,35 @@
+import argparse
+from rag_pipeline import RAGPipeline
+
+def main():
+    parser = argparse.ArgumentParser(description="CLI RAG Service")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--index", action="store_true", help="Write the file form 'docs' to the vector database")
+    group.add_argument("--query", type=str, help="Question to answer")
+    group.add_argument("--status", action="store_true", help="Diagnostic check of the vector database")
+    group.add_argument("--clear", action="store_true", help="Clear the vector database")
+
+    args = parser.parse_args()
+
+    rag = RAGPipeline()
+
+    if args.index:
+        rag.index()
+
+    elif args.query is not None:
+        response = rag.answer(args.query)
+        #print(response.upper())
+
+    elif args.status:
+        rag.status()
+
+    elif args.clear:
+        rag.clear()
+
+    else:
+        print("Invalid argument")
+        parser.print_help()
+        rag.close()
+
+if __name__ == "__main__":
+    main()
