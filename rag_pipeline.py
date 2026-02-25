@@ -287,6 +287,12 @@ class RAGPipeline:
                 print(char.upper(), end="", flush=True)
                 time.sleep(0.01)
             print()
+        docs = self.retriever.invoke(query)
+        sources = sorted({doc.metadata.get("source", "?") for doc in docs})
+        if sources:
+            print("[ANSWER] Sources:")
+            for s in sources:
+                print(f"  - {s}")
         print()
         return response
 
@@ -437,7 +443,7 @@ class RAGPipeline:
         print("-" * 80)
         try:
             if points_count > 0:
-                results = self.retriever.get_relevant_documents("Python")
+                results = self.retriever.invoke("Python")
                 print(f"  Query 'Python': {len(results)} results")
             else:
                 print("  (empty)")
