@@ -1,7 +1,10 @@
+"""CLI for RAG pipeline: --index, --query, --status, --clear."""
 import argparse
 from rag_pipeline import RAGPipeline
 
+
 def main():
+    """Parse args and run index, query, status, or clear."""
     parser = argparse.ArgumentParser(description="CLI RAG Service")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--index", action="store_true", help="Index docs from data dir into the vector DB")
@@ -17,8 +20,7 @@ def main():
         rag.index()
 
     elif args.query is not None:
-        response = rag.answer(args.query)
-        #print(response.upper())
+        rag.answer(args.query)
 
     elif args.status:
         rag.status()

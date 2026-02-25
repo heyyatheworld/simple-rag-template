@@ -1,3 +1,4 @@
+"""RAG pipeline: index Markdown docs into ChromaDB, answer questions via Ollama."""
 import os
 import time
 import textwrap
@@ -14,21 +15,18 @@ from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_chroma import Chroma
 
+
 class RAGPipeline:
-    """
-    RAGPipeline is a class that provides a pipeline for RAG (Retrieval-Augmented Generation) tasks.
-    It is used to index a file and answer questions about the file.
-    """
+    """Index Markdown docs into ChromaDB and answer questions using Ollama embeddings + LLM."""
+
     def __init__(self):
         print()
         print("[INIT] Initializing RAG Pipeline...")
-
-        # Config from .env (OLLAMA_* variables)
         self.collection_name = os.getenv("OLLAMA_CHROMA_COLLECTION", "rag_collection")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
         self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large:latest")
         self.llm_model = os.getenv("OLLAMA_LLM_MODEL", "llama3.2")
-        self.vector_size = int(os.getenv("OLLAMA_VECTOR_SIZE", "1024"))  # mxbai-embed-large = 1024
+        self.vector_size = int(os.getenv("OLLAMA_VECTOR_SIZE", "1024"))
         docs_path = os.getenv("OLLAMA_DOCS_PATH", "data")
         vectors_path = os.getenv("OLLAMA_VECTORS_PATH", "vectors")
         chroma_persist = os.getenv("OLLAMA_CHROMA_PERSIST_DIR", "").strip() or os.path.join(
@@ -86,6 +84,7 @@ class RAGPipeline:
         print("[INIT] Done\n")
 
     def index(self):
+        """Load .md from docs path, split, deduplicate, embed via Ollama, store in ChromaDB."""
         print("[INDEX] Starting...")
         print(f"[INDEX] Reading from {self.index_path} (incl. subdirs)")
         
@@ -203,8 +202,6 @@ class RAGPipeline:
             return
         
         print("[INDEX] Adding to vector store...")
-
-        # Max chars per text for Ollama embed (one text per request)
         max_chars_per_doc = int(os.getenv("OLLAMA_EMBED_MAX_DOC_CHARS", "500"))
 
         def trim_doc(d):
@@ -280,6 +277,7 @@ class RAGPipeline:
         print("[INDEX] Done\n")
 
     def answer(self, query: str) -> str:
+        """Run RAG: retrieve context from ChromaDB, then generate answer with LLM."""
         print(f"[ANSWER] Query: {query[:80]}...")
         response = self.chain.invoke(query)
         print(f"[ANSWER] Response ({len(response)} chars)")
@@ -291,8 +289,9 @@ class RAGPipeline:
             print()
         print()
         return response
-    
+
     def status(self):
+        """Print vector DB stats, sample docs, duplicate check, and config."""
         print("=" * 80)
         print("VECTOR DB STATUS (ChromaDB)")
         print("=" * 80)
@@ -450,6 +449,7 @@ class RAGPipeline:
         print("=" * 80 + "\n")
 
     def clear(self):
+        """Delete the ChromaDB collection and recreate it empty."""
         print("[CLEAR] Clearing ChromaDB collection...")
         try:
             self.vector_store._client.delete_collection(name=self.collection_name)
@@ -470,5 +470,6 @@ class RAGPipeline:
         print("[CLEAR] Done")
 
     def close(self):
+        """No-op; ChromaDB persists to disk."""
         pass
     
