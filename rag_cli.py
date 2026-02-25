@@ -4,7 +4,7 @@ from rag_pipeline import RAGPipeline
 def main():
     parser = argparse.ArgumentParser(description="CLI RAG Service")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--index", action="store_true", help="Write the file form 'docs' to the vector database")
+    group.add_argument("--index", action="store_true", help="Index docs from data dir into the vector DB")
     group.add_argument("--query", type=str, help="Question to answer")
     group.add_argument("--status", action="store_true", help="Diagnostic check of the vector database")
     group.add_argument("--clear", action="store_true", help="Clear the vector database")

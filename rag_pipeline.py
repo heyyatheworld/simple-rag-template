@@ -21,9 +21,9 @@ class RAGPipeline:
     """
     def __init__(self):
         print()
-        print("[INIT] Инициализация RAG Pipeline...")
+        print("[INIT] Initializing RAG Pipeline...")
 
-        # Конфигурация из .env (все переменные с префиксом OLLAMA_)
+        # Config from .env (OLLAMA_* variables)
         self.collection_name = os.getenv("OLLAMA_CHROMA_COLLECTION", "rag_collection")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
         self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large:latest")
@@ -38,17 +38,17 @@ class RAGPipeline:
         self.index_path = os.path.join(os.path.dirname(__file__), docs_path)
         self.vectors = os.path.join(os.path.dirname(__file__), vectors_path)
         self.chroma_persist_directory = chroma_persist
-        print(f"[INIT] Путь к документам: {self.index_path}")
-        print(f"[INIT] Путь к ChromaDB: {self.chroma_persist_directory}")
+        print(f"[INIT] Docs path: {self.index_path}")
+        print(f"[INIT] ChromaDB path: {self.chroma_persist_directory}")
         print()
 
-        print(f"[INIT] Создание Ollama Embeddings ({self.embedding_model})...")
+        print(f"[INIT] Creating Ollama Embeddings ({self.embedding_model})...")
         self.embeddings = OllamaEmbeddings(
             model=self.embedding_model,
             base_url=self.ollama_base_url,
         )
 
-        print(f"[INIT] Инициализация ChromaDB (коллекция '{self.collection_name}')...")
+        print(f"[INIT] ChromaDB collection: '{self.collection_name}'")
         os.makedirs(self.chroma_persist_directory, exist_ok=True)
         self.vector_store = Chroma(
             collection_name=self.collection_name,
@@ -56,15 +56,15 @@ class RAGPipeline:
             embedding_function=self.embeddings,
         )
 
-        print("[INIT] Создание retriever (k=5)...")
+        print("[INIT] Retriever (k=5)")
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
 
-        print("[INIT] Создание PromptTemplate...")
+        print("[INIT] PromptTemplate")
         self.prompt = PromptTemplate.from_template(
             "Answer the following question based on the context:\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:"
         )
 
-        print(f"[INIT] Создание LLM Ollama ({self.llm_model})...")
+        print(f"[INIT] LLM Ollama ({self.llm_model})")
         self.llm = ChatOllama(
             model=self.llm_model,
             temperature=0,
@@ -72,28 +72,22 @@ class RAGPipeline:
         )
 
         def format_docs(docs):
-            print(f"[FORMAT_DOCS] Получено документов: {len(docs)}")
-            for i, doc in enumerate(docs):
-                content_preview = doc.page_content[:80] + "..." if len(doc.page_content) > 80 else doc.page_content
-                print(f"[FORMAT_DOCS] Документ {i+1}: {len(doc.page_content)} символов, превью: {content_preview}")
             formatted = "\n\n".join(doc.page_content for doc in docs)
-            print(f"[FORMAT_DOCS] Объединенный текст: {len(formatted)} символов")
-            print()
             return formatted
 
         self._format_docs = format_docs
-        print("[INIT] Создание RAG chain...")
+        print("[INIT] RAG chain ready")
         self.chain = (
             {"context": self.retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
             | self.prompt
             | self.llm
             | StrOutputParser()
         )
-        print("[INIT] Инициализация завершена успешно\n")
+        print("[INIT] Done\n")
 
     def index(self):
-        print("[INDEX] Начало индексации документов...")
-        print(f"[INDEX] Чтение файлов из: {self.index_path} (включая подпапки)")
+        print("[INDEX] Starting...")
+        print(f"[INDEX] Reading from {self.index_path} (incl. subdirs)")
         
         documents = []
         md_files = []
@@ -103,19 +97,16 @@ class RAGPipeline:
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, self.index_path)
                     md_files.append((file_path, rel_path))
-        print(f"[INDEX] Найдено .md файлов: {len(md_files)}")
+        print(f"[INDEX] Found {len(md_files)} .md files")
         
         for file_path, rel_path in md_files:
-            print(f"[INDEX] Чтение файла: {rel_path}")
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
                 doc = Document(page_content=content, metadata={"source": rel_path})
                 documents.append(doc)
-                print(f"[INDEX] Файл '{rel_path}' прочитан: {len(content)} символов")
-        print(f"[INDEX] Всего документов загружено: {len(documents)}")
-        print()
+        print(f"[INDEX] Loaded {len(documents)} documents")
 
-        print("[INDEX] Разделение документов по markdown заголовкам...")
+        print("[INDEX] Splitting by markdown headers...")
 
         markdown_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=[
@@ -125,46 +116,25 @@ class RAGPipeline:
         
         split_docs = []
         for doc in documents:
-            print(f"[INDEX] Разбиение документа '{doc.metadata.get('source', 'unknown')}' по заголовкам...")
             header_splits = markdown_splitter.split_text(doc.page_content)
             for split in header_splits:
                 split.metadata.update(doc.metadata)
-                headers = {k: v for k, v in split.metadata.items() if k.startswith("Header")}
-                if headers:
-                    print(f"[INDEX]   Раздел: {headers}, размер: {len(split.page_content)} символов")
             split_docs.extend(header_splits)
-            print(f"[INDEX] Документ разбит на {len(header_splits)} разделов")
         
-        print(f"[INDEX] После разбиения по заголовкам: {len(split_docs)} разделов")
-        print()
+        print(f"[INDEX] After header split: {len(split_docs)} sections")
         
-        print("[INDEX] Создание RecursiveCharacterTextSplitter (chunk_size=1000, chunk_overlap=200)...")
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
             encoding_name="cl100k_base",
             chunk_size=1000,
             chunk_overlap=200,
             separators=["\n\n## ", "\n\n", "\n", ". ", " ", ""])
-        print()
-        print("[INDEX] Финальное разбиение больших разделов на чанки...")
         texts = text_splitter.split_documents(split_docs)
-        print(f"[INDEX] Создано чанков: {len(texts)}")
-        for i, text in enumerate(texts[:5]):
-            preview = text.page_content[:100] + "..." if len(text.page_content) > 100 else text.page_content
-            headers = {k: v for k, v in text.metadata.items() if k.startswith("Header")}
-            header_info = f", заголовок: {headers}" if headers else ""
-            #print(f"[INDEX] Чанк {i+1}: {len(text.page_content)} символов{header_info}")
-            #print(f"[INDEX]   Превью: {preview}")
-        if len(texts) > 5:
-            print(f"[INDEX] ... и еще {len(texts) - 5} чанков")
-        print()
+        print(f"[INDEX] Chunks: {len(texts)}")
 
-        print("[INDEX] Проверка на дубликаты...")
+        print("[INDEX] Checking duplicates...")
 
         existing_hashes = set()
         original_existing_hashes = set()
-        existing_points_with_hash = []
-        existing_points_without_hash = []
-
         try:
             result = self.vector_store._collection.get(
                 include=["metadatas"],
@@ -172,75 +142,42 @@ class RAGPipeline:
             )
             ids = result.get("ids") or []
             metadatas = result.get("metadatas") or []
-
             for i, doc_id in enumerate(ids):
                 meta = metadatas[i] if i < len(metadatas) else {}
                 if not isinstance(meta, dict):
                     meta = {}
-                # LangChain Chroma может хранить metadata вложенно
-                inner = meta.get("metadata", meta)
-                if isinstance(inner, dict) and "content_hash" in inner:
-                    hash_value = inner["content_hash"]
+                inner = meta.get("metadata", meta) if isinstance(meta.get("metadata"), dict) else meta
+                if not isinstance(inner, dict):
+                    inner = meta
+                hash_value = inner.get("content_hash") or meta.get("content_hash")
+                orig = inner.get("original_content_hash") or meta.get("original_content_hash")
+                if hash_value:
                     existing_hashes.add(hash_value)
                     original_existing_hashes.add(hash_value)
-                    existing_points_with_hash.append({
-                        "id": doc_id,
-                        "hash": hash_value,
-                        "source": inner.get("source", meta.get("source", "unknown")),
-                    })
-                elif isinstance(meta, dict) and "content_hash" in meta:
-                    hash_value = meta["content_hash"]
-                    existing_hashes.add(hash_value)
-                    original_existing_hashes.add(hash_value)
-                    existing_points_with_hash.append({
-                        "id": doc_id,
-                        "hash": hash_value,
-                        "source": meta.get("source", "unknown"),
-                    })
-                else:
-                    existing_points_without_hash.append({
-                        "id": doc_id,
-                        "source": meta.get("source", "unknown") if isinstance(meta, dict) else "unknown",
-                    })
-
-            print(f"[INDEX] Найдено существующих документов: {len(existing_hashes)}")
+                if orig:
+                    existing_hashes.add(orig)
+                    original_existing_hashes.add(orig)
+            print(f"[INDEX] Existing documents: {len(existing_hashes)}")
         except Exception as e:
-            print(f"[INDEX] Ошибка при получении существующих документов: {e}")
+            print(f"[INDEX] Error loading existing: {e}")
             existing_hashes = set()
             original_existing_hashes = set()
         
         new_texts = []
         duplicate_count = 0
         new_hashes = []
-        duplicate_hashes = []
-        
         for idx, text in enumerate(texts, 1):
-            source = text.metadata.get('source', 'unknown')
-            
-            content_to_hash = f"{text.page_content}{source}"
-            
-            content_hash = hashlib.md5(content_to_hash.encode('utf-8')).hexdigest()
-            
-            text.metadata['content_hash'] = content_hash
-            
+            source = text.metadata.get("source", "unknown")
+            content_hash = hashlib.md5(f"{text.page_content}{source}".encode("utf-8")).hexdigest()
+            text.metadata["content_hash"] = content_hash
             if content_hash in existing_hashes:
                 duplicate_count += 1
-                duplicate_hashes.append({
-                    'hash': content_hash,
-                    'source': source,
-                    'index': idx
-                })
             else:
                 new_texts.append(text)
-                new_hashes.append({
-                    'hash': content_hash,
-                    'source': source,
-                    'index': idx
-                })
+                new_hashes.append({"hash": content_hash, "source": source, "index": idx})
                 existing_hashes.add(content_hash)
         
-        print(f"[INDEX] Найдено дубликатов: {duplicate_count}")
-        print(f"[INDEX] Новых документов для добавления: {len(new_texts)}")
+        print(f"[INDEX] Duplicates skipped: {duplicate_count}, new to add: {len(new_texts)}")
         
         if original_existing_hashes and new_hashes:
             new_hash_set = {h['hash'] for h in new_hashes}
@@ -262,24 +199,12 @@ class RAGPipeline:
                 duplicate_count += removed_count
         
         if not new_texts:
-            print("[INDEX] Все документы уже существуют в коллекции. Индексация не требуется.")
-            print("[INDEX] Индексация завершена успешно\n")
+            print("[INDEX] All documents already in collection. Skip.")
             return
         
-        print("[INDEX] Добавление новых документов в векторное хранилище...")
-        
-        hashes_before_write = []
-        for text in new_texts:
-            if 'content_hash' in text.metadata:
-                hashes_before_write.append(text.metadata['content_hash'])
-            else:
-                print(f"[INDEX] ⚠ ВНИМАНИЕ: Документ без хеша перед записью!")
-                print(f"[INDEX]   Source: {text.metadata.get('source', 'unknown')}")
-                print(f"[INDEX]   Content preview: {text.page_content[:50]}...")
-        
-        print(f"[INDEX] Хешей в метаданных перед записью: {len(hashes_before_write)}/{len(new_texts)}")
+        print("[INDEX] Adding to vector store...")
 
-        # Лимит символов на один текст (Ollama embed — один текст на запрос, лимит контекста мал)
+        # Max chars per text for Ollama embed (one text per request)
         max_chars_per_doc = int(os.getenv("OLLAMA_EMBED_MAX_DOC_CHARS", "500"))
 
         def trim_doc(d):
@@ -294,6 +219,7 @@ class RAGPipeline:
                 chunk_content = d.page_content[start:end]
                 meta = dict(d.metadata)
                 meta["_chunk_index"] = idx
+                meta["original_content_hash"] = base_hash
                 meta["content_hash"] = hashlib.md5(
                     (base_hash + str(idx)).encode()
                 ).hexdigest()
@@ -305,82 +231,58 @@ class RAGPipeline:
         expanded = []
         for doc in new_texts:
             expanded.extend(trim_doc(doc))
+        if len(expanded) != len(new_texts):
+            print(f"[INDEX] {len(new_texts)} chunks → {len(expanded)} docs (trim to {max_chars_per_doc} chars each)")
 
-        # По одному документу на запрос (Ollama embed не принимает батчи/длинный ввод)
+        hashes_written = {doc.metadata.get("content_hash") for doc in expanded if doc.metadata.get("content_hash")}
+
         total_added = 0
         report_every = 100
-        for i, doc in enumerate(expanded):
+        for doc in expanded:
             self.vector_store.add_documents([doc])
             total_added += 1
             if total_added % report_every == 0:
-                print(f"[INDEX] Добавлено: {total_added}/{len(expanded)}")
-        print(f"[INDEX] {total_added} документов добавлено в векторное хранилище")
-        
-        print("[INDEX] Проверка сохранения хешей в базе...")
+                print(f"[INDEX] Added: {total_added}/{len(expanded)}")
+        print(f"[INDEX] Added {total_added} documents")
+
+        print("[INDEX] Verifying...")
         try:
-            result = self.vector_store._collection.get(
-                include=["metadatas"],
-                limit=len(new_texts) * 2 + 1000,
-            )
-            metadatas = result.get("metadatas") or []
-
-            found_hashes = set()
-            missing_hashes = []
-
-            for hash_val in hashes_before_write:
-                found = False
+            db_hashes = set()
+            page_size = 10_000
+            offset = 0
+            while True:
+                result = self.vector_store._collection.get(
+                    include=["metadatas"],
+                    limit=page_size,
+                    offset=offset,
+                )
+                metadatas = result.get("metadatas") or []
+                ids = result.get("ids") or []
+                if not ids:
+                    break
                 for meta in metadatas:
                     if not isinstance(meta, dict):
                         continue
-                    inner = meta.get("metadata", meta)
-                    if isinstance(inner, dict) and inner.get("content_hash") == hash_val:
-                        found_hashes.add(hash_val)
-                        found = True
-                        break
-                    if meta.get("content_hash") == hash_val:
-                        found_hashes.add(hash_val)
-                        found = True
-                        break
-                if not found:
-                    missing_hashes.append(hash_val)
-
-            print(f"[INDEX] Хешей найдено в базе: {len(found_hashes)}/{len(hashes_before_write)}")
-            if missing_hashes:
-                print(f"[INDEX] ⚠ Хешей НЕ найдено в базе: {len(missing_hashes)}")
-                print(f"[INDEX]   Примеры отсутствующих хешей:")
-                for hash_val in missing_hashes[:5]:
-                    print(f"[INDEX]     - {hash_val}")
-
-            if metadatas:
-                example = metadatas[0] if isinstance(metadatas[0], dict) else {}
-                inner = example.get("metadata", example)
-                print(f"[INDEX] Пример структуры метаданных в ChromaDB:")
-                print(f"[INDEX]   Ключи: {list(inner.keys()) if isinstance(inner, dict) else list(example.keys())}")
-                if isinstance(inner, dict) and "content_hash" in inner:
-                    print(f"[INDEX]   ✓ content_hash присутствует: {inner['content_hash'][:16]}...")
-                elif isinstance(example, dict) and "content_hash" in example:
-                    print(f"[INDEX]   ✓ content_hash присутствует: {example['content_hash'][:16]}...")
-                else:
-                    print(f"[INDEX]   ✗ content_hash не найден в примере")
+                    h = meta.get("content_hash") or (meta.get("metadata") or {}).get("content_hash")
+                    if h:
+                        db_hashes.add(h)
+                if len(ids) < page_size:
+                    break
+                offset += page_size
+            found = len(hashes_written & db_hashes)
+            missing = len(hashes_written - db_hashes)
+            print(f"[INDEX] Hashes in DB: {found}/{len(hashes_written)}")
+            if missing:
+                print(f"[INDEX] Missing: {missing}")
         except Exception as e:
-            print(f"[INDEX] ⚠ Ошибка при проверке сохранения хешей: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        print("[INDEX] Индексация завершена успешно\n")
-        print()
+            print(f"[INDEX] Verify error: {e}")
+
+        print("[INDEX] Done\n")
 
     def answer(self, query: str) -> str:
-        print(f"[ANSWER] Получен запрос: {query}")
-        print(f"[ANSWER] Длина запроса: {len(query)} символов")
-        
-        print("[ANSWER] Запуск RAG chain...")
-        print("[ANSWER] Поиск релевантных документов через retriever...")
-        
+        print(f"[ANSWER] Query: {query[:80]}...")
         response = self.chain.invoke(query)
-
-        print(f"[ANSWER] Получен ответ от LLM: {len(response)} символов")
-        print()
+        print(f"[ANSWER] Response ({len(response)} chars)")
         for line in textwrap.wrap(response, 80):
             print(f"[ANSWER] ", end="")
             for char in line:
@@ -388,41 +290,38 @@ class RAGPipeline:
                 time.sleep(0.01)
             print()
         print()
-        print("[ANSWER] Обработка запроса завершена\n")
         return response
     
     def status(self):
         print("=" * 80)
-        print("ДИАГНОСТИКА ВЕКТОРНОЙ БАЗЫ ДАННЫХ (ChromaDB)")
+        print("VECTOR DB STATUS (ChromaDB)")
         print("=" * 80)
 
         if not hasattr(self, "vector_store") or self.vector_store is None:
-            print("✗ Ошибка: ChromaDB vector store не инициализирован")
+            print("Error: ChromaDB not initialized")
             return
 
-        print("\n[STATUS] 1. ПОДКЛЮЧЕНИЕ К CHROMADB")
+        print("\n[STATUS] 1. CHROMADB")
         print("-" * 80)
         try:
-            print(f"✓ Путь к данным: {self.chroma_persist_directory}")
-            print(f"✓ Коллекция: {self.collection_name}")
+            print(f"  Path: {self.chroma_persist_directory}")
+            print(f"  Collection: {self.collection_name}")
         except Exception as e:
-            print(f"✗ Ошибка: {e}")
+            print(f"  Error: {e}")
             return
 
         points_count = 0
-        print(f"\n[STATUS] 2. КОЛЛЕКЦИЯ '{self.collection_name}'")
+        print(f"\n[STATUS] 2. COLLECTION '{self.collection_name}'")
         print("-" * 80)
         try:
             points_count = self.vector_store._collection.count()
-            print(f"✓ Коллекция существует")
-            print(f"  Размерность векторов: {self.vector_size} (из конфигурации)")
-            print(f"\n  Статистика:")
-            print(f"  - Всего документов: {points_count}")
+            print(f"  Vector size: {self.vector_size}")
+            print(f"  Documents: {points_count}")
         except Exception as e:
-            print(f"✗ Ошибка при получении информации о коллекции: {e}")
+            print(f"  Error: {e}")
             return
 
-        print("\n[STATUS] 3. ДОКУМЕНТЫ В КОЛЛЕКЦИИ")
+        print("\n[STATUS] 3. SAMPLE DOCUMENTS")
         print("-" * 80)
         try:
             result = self.vector_store._collection.get(
@@ -432,61 +331,39 @@ class RAGPipeline:
             ids = result.get("ids") or []
             metadatas = result.get("metadatas") or []
             documents = result.get("documents") or []
-            print(f"✓ Найдено документов в коллекции: {points_count}")
+            print(f"  Total in collection: {points_count}")
 
             if ids:
-                print(f"\n  Примеры документов (первые {min(10, len(ids))}):")
                 sources = {}
-                for i, doc_id in enumerate(ids):
+                for i in range(len(ids)):
                     meta = metadatas[i] if i < len(metadatas) else {}
                     if not isinstance(meta, dict):
                         meta = {}
                     inner = meta.get("metadata", meta)
                     source = inner.get("source", meta.get("source", "unknown")) if isinstance(inner, dict) else meta.get("source", "unknown")
-                    if source not in sources:
-                        sources[source] = 0
-                    sources[source] += 1
-                print(f"\n  Документы по источникам:")
-                for source, cnt in sources.items():
-                    print(f"    - {source}: {cnt} чанков")
-                print(f"\n  Примеры метаданных:")
-                for i in range(min(3, len(ids))):
-                    meta = metadatas[i] if i < len(metadatas) else {}
-                    inner = meta.get("metadata", meta) if isinstance(meta, dict) else {}
-                    doc_text = documents[i] if i < len(documents) else ""
-                    source = inner.get("source", "N/A") if isinstance(inner, dict) else "N/A"
-                    headers = {k: v for k, v in (inner or {}).items() if k.startswith("Header")} if isinstance(inner, dict) else {}
-                    preview = (doc_text[:100] + "...") if len(doc_text) > 100 else doc_text
-                    print(f"    Документ {i + 1}:")
-                    print(f"      ID: {ids[i]}")
-                    print(f"      Источник: {source}")
-                    if headers:
-                        print(f"      Заголовки: {headers}")
-                    print(f"      Размер контента: {len(doc_text)} символов")
-                    print(f"      Превью: {preview}")
+                    sources[source] = sources.get(source, 0) + 1
+                print("  By source:")
+                for source, cnt in list(sources.items())[:10]:
+                    print(f"    - {source}: {cnt} chunks")
             else:
-                print("  ⚠ Коллекция пуста - документы не проиндексированы")
+                print("  Collection empty")
         except Exception as e:
-            print(f"✗ Ошибка при получении документов: {e}")
+            print(f"  Error: {e}")
 
-        print("\n[STATUS] 4. ПРОВЕРКА НА ДУБЛИКАТЫ")
+        print("\n[STATUS] 4. DUPLICATES CHECK")
         print("-" * 80)
         try:
             if points_count == 0:
-                print("  ⚠ Коллекция пуста - проверка на дубликаты пропущена")
+                print("  (empty, skip)")
             else:
-                print("  Получение всех документов из коллекции...")
                 result = self.vector_store._collection.get(
                     include=["metadatas"],
                     limit=100000,
                 )
                 all_ids = result.get("ids") or []
                 all_metadatas = result.get("metadatas") or []
-                print(f"  Получено документов для проверки: {len(all_ids)}")
-
                 hash_to_points = {}
                 points_without_hash = []
-
                 for i, doc_id in enumerate(all_ids):
                     meta = all_metadatas[i] if i < len(all_metadatas) else {}
                     if not isinstance(meta, dict):
@@ -494,26 +371,16 @@ class RAGPipeline:
                     inner = meta.get("metadata", meta)
                     content_hash = (inner.get("content_hash") if isinstance(inner, dict) else None) or meta.get("content_hash")
                     if content_hash:
-                        if content_hash not in hash_to_points:
-                            hash_to_points[content_hash] = []
-                        hash_to_points[content_hash].append({"id": doc_id, "meta": meta})
+                        hash_to_points.setdefault(content_hash, []).append({"id": doc_id, "meta": meta})
                     else:
                         points_without_hash.append(doc_id)
-
                 duplicates = {h: lst for h, lst in hash_to_points.items() if len(lst) > 1}
-                print(f"  Документов с хешем: {len(hash_to_points)}")
-                print(f"  Документов без хеша: {len(points_without_hash)}")
-                print(f"  Найдено дубликатов (hash с несколькими документами): {len(duplicates)}")
-
+                print(f"  With hash: {len(hash_to_points)}, without: {len(points_without_hash)}, duplicate groups: {len(duplicates)}")
                 if duplicates:
                     ids_to_delete = []
                     for content_hash, points_list in duplicates.items():
-                        points_to_remove = points_list[1:]
-                        ids_to_delete.extend([p["id"] for p in points_to_remove])
-                        print(f"    Hash {content_hash[:16]}...: {len(points_list)} документов, "
-                              f"оставляем 1, удаляем {len(points_to_remove)}")
+                        ids_to_delete.extend([p["id"] for p in points_list[1:]])
                     if ids_to_delete:
-                        print(f"\n  Удаление {len(ids_to_delete)} дубликатов...")
                         batch_size = 100
                         deleted_count = 0
                         for i in range(0, len(ids_to_delete), batch_size):
@@ -521,21 +388,15 @@ class RAGPipeline:
                             try:
                                 self.vector_store.delete(ids=batch_ids)
                                 deleted_count += len(batch_ids)
-                                print(f"    Удалено: {deleted_count}/{len(ids_to_delete)}")
                             except Exception as e:
-                                print(f"    Ошибка при удалении батча: {e}")
-                        print(f"  ✓ Успешно удалено {deleted_count} дубликатов")
-                        print(f"  ✓ Осталось уникальных документов: {len(all_ids) - deleted_count}")
-                    else:
-                        print("  ⚠ Нет дубликатов для удаления")
+                                print(f"  Delete error: {e}")
+                        print(f"  Deleted {deleted_count} duplicates")
                 else:
-                    print("  ✓ Дубликаты не найдены - все документы уникальны")
+                    print("  No duplicates")
         except Exception as e:
-            print(f"✗ Ошибка при проверке на дубликаты: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"  Error: {e}")
         
-        print("\n[STATUS] 5. ФАЙЛЫ В ДИРЕКТОРИИ ДОКУМЕНТОВ (включая подпапки)")
+        print("\n[STATUS] 5. DOCS DIRECTORY (incl. subdirs)")
         print("-" * 80)
         try:
             if os.path.exists(self.index_path):
@@ -546,76 +407,54 @@ class RAGPipeline:
                             file_path = os.path.join(root, file)
                             rel_path = os.path.relpath(file_path, self.index_path)
                             md_files.append((rel_path, file_path))
-                print(f"✓ Директория существует: {self.index_path}")
-                print(f"✓ Найдено .md файлов: {len(md_files)}")
-                total_size = 0
-                for rel_path, file_path in sorted(md_files):
+                print(f"  Path: {self.index_path}")
+                print(f"  .md files: {len(md_files)}")
+                total_size = sum(os.path.getsize(fp) for _, fp in md_files)
+                for rel_path, file_path in sorted(md_files)[:15]:
                     size = os.path.getsize(file_path)
-                    total_size += size
-                    print(f"  - {rel_path}: {size:,} байт ({size/1024:.2f} KB)")
-                print(f"\n  Общий размер: {total_size:,} байт ({total_size/1024:.2f} KB)")
+                    print(f"    {rel_path}: {size:,} B")
+                if len(md_files) > 15:
+                    print(f"    ... and {len(md_files) - 15} more")
+                print(f"  Total: {total_size:,} B ({total_size/1024:.1f} KB)")
             else:
-                print(f"✗ Директория не существует: {self.index_path}")
+                print(f"  Path missing: {self.index_path}")
         except Exception as e:
-            print(f"✗ Ошибка при проверке директории: {e}")
+            print(f"  Error: {e}")
         
-        print("\n[STATUS] 6. КОНФИГУРАЦИЯ EMBEDDINGS (Ollama)")
+        print("\n[STATUS] 6. EMBEDDINGS (Ollama)")
         print("-" * 80)
-        try:
-            print(f"✓ Модель: {self.embedding_model}")
-            print(f"✓ Размерность: {self.vector_size}")
-            print(f"✓ Ollama URL: {self.ollama_base_url}")
-        except Exception as e:
-            print(f"✗ Ошибка: {e}")
+        print(f"  Model: {self.embedding_model}, dim: {self.vector_size}")
+        print(f"  URL: {self.ollama_base_url}")
 
-        print("\n[STATUS] 7. КОНФИГУРАЦИЯ LLM (Ollama)")
+        print("\n[STATUS] 7. LLM (Ollama)")
         print("-" * 80)
-        try:
-            print(f"✓ Модель: {self.llm_model}")
-            print(f"✓ Temperature: 0")
-            print(f"✓ Ollama URL: {self.ollama_base_url}")
-        except Exception as e:
-            print(f"✗ Ошибка: {e}")
+        print(f"  Model: {self.llm_model}, temperature: 0")
         
-        print("\n[STATUS] 8. КОНФИГУРАЦИЯ RETRIEVER")
+        print("\n[STATUS] 8. RETRIEVER")
         print("-" * 80)
-        try:
-            search_kwargs = self.retriever.search_kwargs
-            print(f"✓ Количество возвращаемых документов (k): {search_kwargs.get('k', 'N/A')}")
-            print(f"✓ Тип поиска: векторный поиск по косинусному расстоянию")
-        except Exception as e:
-            print(f"✗ Ошибка: {e}")
+        print(f"  k: {self.retriever.search_kwargs.get('k', 'N/A')}")
         
-        print("\n[STATUS] 9. ТЕСТОВЫЙ ПОИСК")
+        print("\n[STATUS] 9. TEST SEARCH")
         print("-" * 80)
         try:
             if points_count > 0:
-                test_query = "Python"
-                print(f"  Тестовый запрос: '{test_query}'")
-                results = self.retriever.get_relevant_documents(test_query)
-                print(f"✓ Поиск выполнен успешно")
-                print(f"  Найдено релевантных документов: {len(results)}")
-                if results:
-                    print(f"  Первый результат:")
-                    first_result = results[0]
-                    preview = first_result.page_content[:150] + "..." if len(first_result.page_content) > 150 else first_result.page_content
-                    print(f"    Размер: {len(first_result.page_content)} символов")
-                    print(f"    Превью: {preview}")
+                results = self.retriever.get_relevant_documents("Python")
+                print(f"  Query 'Python': {len(results)} results")
             else:
-                print("  ⚠ Коллекция пуста - тестовый поиск пропущен")
+                print("  (empty)")
         except Exception as e:
-            print(f"✗ Ошибка при тестовом поиске: {e}")
+            print(f"  Error: {e}")
         
         print("\n" + "=" * 80)
-        print("ДИАГНОСТИКА ЗАВЕРШЕНА")
+        print("STATUS DONE")
         print("=" * 80 + "\n")
 
     def clear(self):
-        print("[CLEAR] Начало очистки коллекции ChromaDB...")
+        print("[CLEAR] Clearing ChromaDB collection...")
         try:
             self.vector_store._client.delete_collection(name=self.collection_name)
         except Exception as e:
-            print(f"[CLEAR] Предупреждение при удалении коллекции: {e}")
+            print(f"[CLEAR] Warning: {e}")
         self.vector_store = Chroma(
             collection_name=self.collection_name,
             persist_directory=self.chroma_persist_directory,
@@ -628,10 +467,8 @@ class RAGPipeline:
             | self.llm
             | StrOutputParser()
         )
-        print("[CLEAR] Коллекция очищена успешно")
-        print()
+        print("[CLEAR] Done")
 
     def close(self):
-        print("[CLOSE] ChromaDB хранит данные на диске, явное закрытие не требуется.")
-        print()
+        pass
     
