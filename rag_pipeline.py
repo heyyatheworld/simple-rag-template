@@ -6,7 +6,7 @@ import hashlib
 from dotenv import load_dotenv
 load_dotenv()
 
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -25,9 +25,10 @@ class RAGPipeline:
 
         # Конфигурация из .env
         self.collection_name = os.getenv("CHROMA_COLLECTION", "rag_collection")
-        self.embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-        self.llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
-        self.vector_size = int(os.getenv("VECTOR_SIZE", "1536"))
+        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+        self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+        self.llm_model = os.getenv("OLLAMA_LLM_MODEL", "llama3.2")
+        self.vector_size = int(os.getenv("VECTOR_SIZE", "1024"))  # nomic-embed-text = 1024
         docs_path = os.getenv("DOCS_PATH", "docs")
         vectors_path = os.getenv("VECTORS_PATH", "vectors")
         chroma_persist = os.getenv("CHROMA_PERSIST_DIR", "").strip() or os.path.join(
@@ -41,10 +42,10 @@ class RAGPipeline:
         print(f"[INIT] Путь к ChromaDB: {self.chroma_persist_directory}")
         print()
 
-        print(f"[INIT] Создание OpenAI Embeddings ({self.embedding_model})...")
-        self.embeddings = OpenAIEmbeddings(
+        print(f"[INIT] Создание Ollama Embeddings ({self.embedding_model})...")
+        self.embeddings = OllamaEmbeddings(
             model=self.embedding_model,
-            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=self.ollama_base_url,
         )
 
         print(f"[INIT] Инициализация ChromaDB (коллекция '{self.collection_name}')...")
@@ -63,11 +64,11 @@ class RAGPipeline:
             "Answer the following question based on the context:\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:"
         )
 
-        print(f"[INIT] Создание LLM ({self.llm_model})...")
-        self.llm = ChatOpenAI(
+        print(f"[INIT] Создание LLM Ollama ({self.llm_model})...")
+        self.llm = ChatOllama(
             model=self.llm_model,
             temperature=0,
-            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=self.ollama_base_url,
         )
 
         def format_docs(docs):
@@ -518,31 +519,21 @@ class RAGPipeline:
         except Exception as e:
             print(f"✗ Ошибка при проверке директории: {e}")
         
-        print("\n[STATUS] 6. КОНФИГУРАЦИЯ EMBEDDINGS")
+        print("\n[STATUS] 6. КОНФИГУРАЦИЯ EMBEDDINGS (Ollama)")
         print("-" * 80)
         try:
             print(f"✓ Модель: {self.embedding_model}")
             print(f"✓ Размерность: {self.vector_size}")
-            api_key = os.getenv("OPENAI_API_KEY")
-            if api_key:
-                masked_key = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
-                print(f"✓ API ключ установлен: {masked_key}")
-            else:
-                print(f"✗ API ключ не установлен")
+            print(f"✓ Ollama URL: {self.ollama_base_url}")
         except Exception as e:
             print(f"✗ Ошибка: {e}")
-        
-        print("\n[STATUS] 7. КОНФИГУРАЦИЯ LLM")
+
+        print("\n[STATUS] 7. КОНФИГУРАЦИЯ LLM (Ollama)")
         print("-" * 80)
         try:
             print(f"✓ Модель: {self.llm_model}")
             print(f"✓ Temperature: 0")
-            api_key = os.getenv("OPENAI_API_KEY")
-            if api_key:
-                masked_key = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
-                print(f"✓ API ключ установлен: {masked_key}")
-            else:
-                print(f"✗ API ключ не установлен")
+            print(f"✓ Ollama URL: {self.ollama_base_url}")
         except Exception as e:
             print(f"✗ Ошибка: {e}")
         
