@@ -12,9 +12,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
-from langchain_qdrant import QdrantVectorStore
-from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, Filter, FieldCondition, MatchValue, PointIdsList
+from langchain_chroma import Chroma
 
 class RAGPipeline:
     """
@@ -26,18 +24,21 @@ class RAGPipeline:
         print("[INIT] Инициализация RAG Pipeline...")
 
         # Конфигурация из .env
-        self.qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-        self.collection_name = os.getenv("QDRANT_COLLECTION", "rag_collection")
+        self.collection_name = os.getenv("CHROMA_COLLECTION", "rag_collection")
         self.embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-        self.llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-3.5-turbo")
+        self.llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
         self.vector_size = int(os.getenv("VECTOR_SIZE", "1536"))
         docs_path = os.getenv("DOCS_PATH", "docs")
         vectors_path = os.getenv("VECTORS_PATH", "vectors")
+        chroma_persist = os.getenv("CHROMA_PERSIST_DIR", "").strip() or os.path.join(
+            os.path.dirname(__file__), vectors_path, "chroma_db"
+        )
 
         self.index_path = os.path.join(os.path.dirname(__file__), docs_path)
         self.vectors = os.path.join(os.path.dirname(__file__), vectors_path)
+        self.chroma_persist_directory = chroma_persist
         print(f"[INIT] Путь к документам: {self.index_path}")
-        print(f"[INIT] Путь к векторам: {self.vectors}")
+        print(f"[INIT] Путь к ChromaDB: {self.chroma_persist_directory}")
         print()
 
         print(f"[INIT] Создание OpenAI Embeddings ({self.embedding_model})...")
@@ -46,46 +47,12 @@ class RAGPipeline:
             api_key=os.getenv("OPENAI_API_KEY"),
         )
 
-        print(f"[INIT] Подключение к Qdrant ({self.qdrant_url})...")
-        self.client = QdrantClient(url=self.qdrant_url)
-
-        print("[INIT] Проверка существующих коллекций...")
-        collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
-        print(f"[INIT] Найдено коллекций: {collection_names}")
-
-        collection_exists = any(c.name == self.collection_name for c in collections)
-
-        if collection_exists:
-            print(f"[INIT] Коллекция '{self.collection_name}' найдена, проверка конфигурации...")
-            try:
-                collection_info = self.client.get_collection(self.collection_name)
-                vector_size = collection_info.config.params.vectors.size
-                print(f"[INIT] Текущая размерность коллекции: {vector_size}")
-                if vector_size != self.vector_size:
-                    print(f"[INIT] ВНИМАНИЕ: Размерность коллекции ({vector_size}) не соответствует требуемой ({self.vector_size})")
-                    print("[INIT] Коллекция будет использована, но возможны ошибки при работе с embeddings")
-                else:
-                    print("[INIT] Размерность коллекции соответствует требованиям")
-                print(f"[INIT] Использование существующей коллекции '{self.collection_name}'")
-            except Exception as e:
-                print(f"[INIT] Ошибка при проверке коллекции: {e}")
-                print("[INIT] Будет создана новая коллекция")
-                collection_exists = False
-        else:
-            print(f"[INIT] Коллекция '{self.collection_name}' не найдена")
-        if not collection_exists:
-            print(f"[INIT] Создание коллекции '{self.collection_name}' с размерностью {self.vector_size}...")
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
-            )
-
-        print("[INIT] Инициализация QdrantVectorStore...")
-        self.vector_store = QdrantVectorStore(
-            client=self.client,
+        print(f"[INIT] Инициализация ChromaDB (коллекция '{self.collection_name}')...")
+        os.makedirs(self.chroma_persist_directory, exist_ok=True)
+        self.vector_store = Chroma(
             collection_name=self.collection_name,
-            embedding=self.embeddings,
+            persist_directory=self.chroma_persist_directory,
+            embedding_function=self.embeddings,
         )
 
         print("[INIT] Создание retriever (k=5)...")
@@ -112,7 +79,8 @@ class RAGPipeline:
             print(f"[FORMAT_DOCS] Объединенный текст: {len(formatted)} символов")
             print()
             return formatted
-        
+
+        self._format_docs = format_docs
         print("[INIT] Создание RAG chain...")
         self.chain = (
             {"context": self.retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
@@ -186,38 +154,50 @@ class RAGPipeline:
         print()
 
         print("[INDEX] Проверка на дубликаты...")
-        
+
         existing_hashes = set()
         original_existing_hashes = set()
         existing_points_with_hash = []
         existing_points_without_hash = []
-        
+
         try:
-            scroll_result = self.client.scroll(
-                collection_name=self.collection_name,
-                limit=10000,
-                with_payload=True,
-                with_vectors=False
+            result = self.vector_store._collection.get(
+                include=["metadatas"],
+                limit=100000,
             )
-            existing_points = scroll_result[0]
-            
-            for i, point in enumerate(existing_points):
-                metadata = point.payload.get('metadata', {})
-                if isinstance(metadata, dict) and 'content_hash' in metadata:
-                    hash_value = metadata['content_hash']
+            ids = result.get("ids") or []
+            metadatas = result.get("metadatas") or []
+
+            for i, doc_id in enumerate(ids):
+                meta = metadatas[i] if i < len(metadatas) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                # LangChain Chroma может хранить metadata вложенно
+                inner = meta.get("metadata", meta)
+                if isinstance(inner, dict) and "content_hash" in inner:
+                    hash_value = inner["content_hash"]
                     existing_hashes.add(hash_value)
                     original_existing_hashes.add(hash_value)
                     existing_points_with_hash.append({
-                        'id': point.id,
-                        'hash': hash_value,
-                        'source': metadata.get('source', point.payload.get('source', 'unknown'))
+                        "id": doc_id,
+                        "hash": hash_value,
+                        "source": inner.get("source", meta.get("source", "unknown")),
+                    })
+                elif isinstance(meta, dict) and "content_hash" in meta:
+                    hash_value = meta["content_hash"]
+                    existing_hashes.add(hash_value)
+                    original_existing_hashes.add(hash_value)
+                    existing_points_with_hash.append({
+                        "id": doc_id,
+                        "hash": hash_value,
+                        "source": meta.get("source", "unknown"),
                     })
                 else:
                     existing_points_without_hash.append({
-                        'id': point.id,
-                        'source': metadata.get('source', point.payload.get('source', 'unknown')) if isinstance(metadata, dict) else point.payload.get('source', 'unknown')
+                        "id": doc_id,
+                        "source": meta.get("source", "unknown") if isinstance(meta, dict) else "unknown",
                     })
-            
+
             print(f"[INDEX] Найдено существующих документов: {len(existing_hashes)}")
         except Exception as e:
             print(f"[INDEX] Ошибка при получении существующих документов: {e}")
@@ -299,53 +279,50 @@ class RAGPipeline:
         
         print("[INDEX] Проверка сохранения хешей в базе...")
         try:
-            scroll_result = self.client.scroll(
-                collection_name=self.collection_name,
-                limit=len(new_texts) * 2,
-                with_payload=True,
-                with_vectors=False
+            result = self.vector_store._collection.get(
+                include=["metadatas"],
+                limit=len(new_texts) * 2 + 1000,
             )
-            all_points = scroll_result[0]
-            
+            metadatas = result.get("metadatas") or []
+
             found_hashes = set()
             missing_hashes = []
-            
+
             for hash_val in hashes_before_write:
                 found = False
-                for point in all_points:
-                    metadata = point.payload.get('metadata', {})
-                    if isinstance(metadata, dict) and metadata.get('content_hash') == hash_val:
+                for meta in metadatas:
+                    if not isinstance(meta, dict):
+                        continue
+                    inner = meta.get("metadata", meta)
+                    if isinstance(inner, dict) and inner.get("content_hash") == hash_val:
+                        found_hashes.add(hash_val)
+                        found = True
+                        break
+                    if meta.get("content_hash") == hash_val:
                         found_hashes.add(hash_val)
                         found = True
                         break
                 if not found:
                     missing_hashes.append(hash_val)
-            
+
             print(f"[INDEX] Хешей найдено в базе: {len(found_hashes)}/{len(hashes_before_write)}")
             if missing_hashes:
                 print(f"[INDEX] ⚠ Хешей НЕ найдено в базе: {len(missing_hashes)}")
                 print(f"[INDEX]   Примеры отсутствующих хешей:")
                 for hash_val in missing_hashes[:5]:
                     print(f"[INDEX]     - {hash_val}")
-            
-            if all_points:
-                example_point = all_points[0]
-                print(f"[INDEX] Пример структуры payload из базы:")
-                print(f"[INDEX]   Ключи в payload: {list(example_point.payload.keys())}")
-                metadata = example_point.payload.get('metadata', {})
-                if isinstance(metadata, dict):
-                    print(f"[INDEX]   Ключи в metadata: {list(metadata.keys())}")
-                    if 'content_hash' in metadata:
-                        print(f"[INDEX]   ✓ content_hash присутствует в metadata: {metadata['content_hash'][:16]}...")
-                    else:
-                        print(f"[INDEX]   ✗ content_hash ОТСУТСТВУЕТ в metadata!")
+
+            if metadatas:
+                example = metadatas[0] if isinstance(metadatas[0], dict) else {}
+                inner = example.get("metadata", example)
+                print(f"[INDEX] Пример структуры метаданных в ChromaDB:")
+                print(f"[INDEX]   Ключи: {list(inner.keys()) if isinstance(inner, dict) else list(example.keys())}")
+                if isinstance(inner, dict) and "content_hash" in inner:
+                    print(f"[INDEX]   ✓ content_hash присутствует: {inner['content_hash'][:16]}...")
+                elif isinstance(example, dict) and "content_hash" in example:
+                    print(f"[INDEX]   ✓ content_hash присутствует: {example['content_hash'][:16]}...")
                 else:
-                    print(f"[INDEX]   ✗ metadata отсутствует или не является словарем!")
-                    if 'content_hash' in example_point.payload:
-                        print(f"[INDEX]   ✓ content_hash присутствует напрямую в payload: {example_point.payload['content_hash'][:16]}...")
-                    else:
-                        print(f"[INDEX]   ✗ content_hash ОТСУТСТВУЕТ в payload!")
-                        print(f"[INDEX]   Доступные ключи: {list(example_point.payload.keys())}")
+                    print(f"[INDEX]   ✗ content_hash не найден в примере")
         except Exception as e:
             print(f"[INDEX] ⚠ Ошибка при проверке сохранения хешей: {e}")
             import traceback
@@ -377,112 +354,82 @@ class RAGPipeline:
     
     def status(self):
         print("=" * 80)
-        print("ДИАГНОСТИКА ВЕКТОРНОЙ БАЗЫ ДАННЫХ")
+        print("ДИАГНОСТИКА ВЕКТОРНОЙ БАЗЫ ДАННЫХ (ChromaDB)")
         print("=" * 80)
-        
-        if not hasattr(self, 'client') or self.client is None:
-            print("✗ Ошибка: Qdrant client не инициализирован")
+
+        if not hasattr(self, "vector_store") or self.vector_store is None:
+            print("✗ Ошибка: ChromaDB vector store не инициализирован")
             return
-        
-        print("\n[STATUS] 1. ПОДКЛЮЧЕНИЕ К QDRANT")
+
+        print("\n[STATUS] 1. ПОДКЛЮЧЕНИЕ К CHROMADB")
         print("-" * 80)
         try:
-            collections = self.client.get_collections().collections
-            print(f"✓ Подключение к Qdrant установлено ({self.qdrant_url})")
-            print(f"✓ Найдено коллекций: {len(collections)}")
-            for col in collections:
-                print(f"  - {col.name}")
+            print(f"✓ Путь к данным: {self.chroma_persist_directory}")
+            print(f"✓ Коллекция: {self.collection_name}")
         except Exception as e:
-            print(f"✗ Ошибка подключения к Qdrant: {e}")
+            print(f"✗ Ошибка: {e}")
             return
-        
+
+        points_count = 0
         print(f"\n[STATUS] 2. КОЛЛЕКЦИЯ '{self.collection_name}'")
         print("-" * 80)
         try:
-            collection_info = self.client.get_collection(self.collection_name)
-            config = collection_info.config
-            params = config.params
-            
+            points_count = self.vector_store._collection.count()
             print(f"✓ Коллекция существует")
-            print(f"  Размерность векторов: {params.vectors.size}")
-            print(f"  Метрика расстояния: {params.vectors.distance}")
-            print(f"  Количество шардов: {params.shard_number}")
-            print(f"  Фактор репликации: {params.replication_factor}")
-            
-            collection_stats = self.client.get_collection(self.collection_name)
-            points_count = collection_stats.points_count
-            indexed_vectors_count = collection_stats.indexed_vectors_count
-            
+            print(f"  Размерность векторов: {self.vector_size} (из конфигурации)")
             print(f"\n  Статистика:")
-            print(f"  - Всего точек: {points_count}")
-            print(f"  - Проиндексировано векторов: {indexed_vectors_count}")
-            
-            if hasattr(config, 'hnsw_config') and config.hnsw_config:
-                hnsw = config.hnsw_config
-                print(f"\n  HNSW конфигурация:")
-                print(f"  - M: {hnsw.m}")
-                print(f"  - ef_construct: {hnsw.ef_construct}")
-                print(f"  - full_scan_threshold: {hnsw.full_scan_threshold}")
+            print(f"  - Всего документов: {points_count}")
         except Exception as e:
             print(f"✗ Ошибка при получении информации о коллекции: {e}")
             return
-        
+
         print("\n[STATUS] 3. ДОКУМЕНТЫ В КОЛЛЕКЦИИ")
         print("-" * 80)
         try:
-            scroll_result = self.client.scroll(
-                collection_name=self.collection_name,
+            result = self.vector_store._collection.get(
                 limit=10,
-                with_payload=True,
-                with_vectors=False
+                include=["metadatas", "documents"],
             )
-            
-            points = scroll_result[0]
+            ids = result.get("ids") or []
+            metadatas = result.get("metadatas") or []
+            documents = result.get("documents") or []
             print(f"✓ Найдено документов в коллекции: {points_count}")
-            
-            if points:
-                print(f"\n  Примеры документов (первые {min(10, len(points))}):")
-                
+
+            if ids:
+                print(f"\n  Примеры документов (первые {min(10, len(ids))}):")
                 sources = {}
-                for point in points:
-                    metadata = point.payload.get('metadata', {})
-                    if isinstance(metadata, dict):
-                        source = metadata.get('source', point.payload.get('source', 'unknown'))
-                    else:
-                        source = point.payload.get('source', 'unknown')
+                for i, doc_id in enumerate(ids):
+                    meta = metadatas[i] if i < len(metadatas) else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    inner = meta.get("metadata", meta)
+                    source = inner.get("source", meta.get("source", "unknown")) if isinstance(inner, dict) else meta.get("source", "unknown")
                     if source not in sources:
-                        sources[source] = []
-                    sources[source].append(point)
-                
+                        sources[source] = 0
+                    sources[source] += 1
                 print(f"\n  Документы по источникам:")
-                for source, source_points in sources.items():
-                    print(f"    - {source}: {len(source_points)} чанков")
-                
+                for source, cnt in sources.items():
+                    print(f"    - {source}: {cnt} чанков")
                 print(f"\n  Примеры метаданных:")
-                for i, point in enumerate(points[:3], 1):
-                    payload = point.payload
-                    metadata = payload.get('metadata', {})
-                    if isinstance(metadata, dict):
-                        source = metadata.get('source', payload.get('source', 'N/A'))
-                        headers = {k: v for k, v in metadata.items() if k.startswith('Header')}
-                    else:
-                        # Fallback для старого формата
-                        source = payload.get('source', 'N/A')
-                        headers = {k: v for k, v in payload.items() if k.startswith('Header')}
-                    
-                    content_preview = payload.get('page_content', '')[:100] + "..." if len(payload.get('page_content', '')) > 100 else payload.get('page_content', '')
-                    print(f"    Документ {i}:")
-                    print(f"      ID: {point.id}")
+                for i in range(min(3, len(ids))):
+                    meta = metadatas[i] if i < len(metadatas) else {}
+                    inner = meta.get("metadata", meta) if isinstance(meta, dict) else {}
+                    doc_text = documents[i] if i < len(documents) else ""
+                    source = inner.get("source", "N/A") if isinstance(inner, dict) else "N/A"
+                    headers = {k: v for k, v in (inner or {}).items() if k.startswith("Header")} if isinstance(inner, dict) else {}
+                    preview = (doc_text[:100] + "...") if len(doc_text) > 100 else doc_text
+                    print(f"    Документ {i + 1}:")
+                    print(f"      ID: {ids[i]}")
                     print(f"      Источник: {source}")
                     if headers:
                         print(f"      Заголовки: {headers}")
-                    print(f"      Размер контента: {len(payload.get('page_content', ''))} символов")
-                    print(f"      Превью: {content_preview}")
+                    print(f"      Размер контента: {len(doc_text)} символов")
+                    print(f"      Превью: {preview}")
             else:
                 print("  ⚠ Коллекция пуста - документы не проиндексированы")
         except Exception as e:
             print(f"✗ Ошибка при получении документов: {e}")
-        
+
         print("\n[STATUS] 4. ПРОВЕРКА НА ДУБЛИКАТЫ")
         print("-" * 80)
         try:
@@ -490,106 +437,60 @@ class RAGPipeline:
                 print("  ⚠ Коллекция пуста - проверка на дубликаты пропущена")
             else:
                 print("  Получение всех документов из коллекции...")
-                all_points = []
-                offset = None
-                batch_size = 1000
-                
-                while True:
-                    scroll_result = self.client.scroll(
-                        collection_name=self.collection_name,
-                        limit=batch_size,
-                        offset=offset,
-                        with_payload=True,
-                        with_vectors=False
-                    )
-                    batch_points, next_offset = scroll_result
-                    all_points.extend(batch_points)
-                    
-                    if next_offset is None:
-                        break
-                    offset = next_offset
-                
-                print(f"  Получено документов для проверки: {len(all_points)}")
-                
+                result = self.vector_store._collection.get(
+                    include=["metadatas"],
+                    limit=100000,
+                )
+                all_ids = result.get("ids") or []
+                all_metadatas = result.get("metadatas") or []
+                print(f"  Получено документов для проверки: {len(all_ids)}")
+
                 hash_to_points = {}
                 points_without_hash = []
-                
-                for point in all_points:
-                    metadata = point.payload.get('metadata', {})
-                    content_hash = metadata.get('content_hash') if isinstance(metadata, dict) else None
+
+                for i, doc_id in enumerate(all_ids):
+                    meta = all_metadatas[i] if i < len(all_metadatas) else {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    inner = meta.get("metadata", meta)
+                    content_hash = (inner.get("content_hash") if isinstance(inner, dict) else None) or meta.get("content_hash")
                     if content_hash:
                         if content_hash not in hash_to_points:
                             hash_to_points[content_hash] = []
-                        hash_to_points[content_hash].append(point)
+                        hash_to_points[content_hash].append({"id": doc_id, "meta": meta})
                     else:
-                        points_without_hash.append(point)
-                
-                duplicates = {hash_val: points_list for hash_val, points_list in hash_to_points.items() 
-                             if len(points_list) > 1}
-                
+                        points_without_hash.append(doc_id)
+
+                duplicates = {h: lst for h, lst in hash_to_points.items() if len(lst) > 1}
                 print(f"  Документов с хешем: {len(hash_to_points)}")
                 print(f"  Документов без хеша: {len(points_without_hash)}")
                 print(f"  Найдено дубликатов (hash с несколькими документами): {len(duplicates)}")
-                
+
                 if duplicates:
-                    total_duplicates_to_remove = 0
                     ids_to_delete = []
-                    
-                    for content_hash, duplicate_points in duplicates.items():
-                        keep_point = duplicate_points[0]
-                        points_to_remove = duplicate_points[1:]
-                        
-                        total_duplicates_to_remove += len(points_to_remove)
-                        ids_to_delete.extend([point.id for point in points_to_remove])
-                        
-                        print(f"    Hash {content_hash[:16]}...: {len(duplicate_points)} документов, "
+                    for content_hash, points_list in duplicates.items():
+                        points_to_remove = points_list[1:]
+                        ids_to_delete.extend([p["id"] for p in points_to_remove])
+                        print(f"    Hash {content_hash[:16]}...: {len(points_list)} документов, "
                               f"оставляем 1, удаляем {len(points_to_remove)}")
-                    
                     if ids_to_delete:
                         print(f"\n  Удаление {len(ids_to_delete)} дубликатов...")
-                        batch_delete_size = 100
+                        batch_size = 100
                         deleted_count = 0
-                        
-                        for i in range(0, len(ids_to_delete), batch_delete_size):
-                            batch_ids = ids_to_delete[i:i + batch_delete_size]
+                        for i in range(0, len(ids_to_delete), batch_size):
+                            batch_ids = ids_to_delete[i : i + batch_size]
                             try:
-                                self.client.delete(
-                                    collection_name=self.collection_name,
-                                    points_selector=PointIdsList(points=batch_ids)
-                                )
+                                self.vector_store.delete(ids=batch_ids)
                                 deleted_count += len(batch_ids)
                                 print(f"    Удалено: {deleted_count}/{len(ids_to_delete)}")
-                            except (TypeError, AttributeError) as e:
-                                try:
-                                    self.client.delete(
-                                        collection_name=self.collection_name,
-                                        points_selector=batch_ids
-                                    )
-                                    deleted_count += len(batch_ids)
-                                    print(f"    Удалено: {deleted_count}/{len(ids_to_delete)}")
-                                except Exception as e2:
-                                    print(f"    Ошибка при удалении батча: {e2}")
-                                    for point_id in batch_ids:
-                                        try:
-                                            self.client.delete(
-                                                collection_name=self.collection_name,
-                                                points_selector=[point_id]
-                                            )
-                                            deleted_count += 1
-                                        except Exception as e3:
-                                            print(f"      Ошибка при удалении точки {point_id}: {e3}")
                             except Exception as e:
                                 print(f"    Ошибка при удалении батча: {e}")
-                                import traceback
-                                traceback.print_exc()
-                        
                         print(f"  ✓ Успешно удалено {deleted_count} дубликатов")
-                        print(f"  ✓ Осталось уникальных документов: {len(all_points) - deleted_count}")
+                        print(f"  ✓ Осталось уникальных документов: {len(all_ids) - deleted_count}")
                     else:
                         print("  ⚠ Нет дубликатов для удаления")
                 else:
                     print("  ✓ Дубликаты не найдены - все документы уникальны")
-                    
         except Exception as e:
             print(f"✗ Ошибка при проверке на дубликаты: {e}")
             import traceback
@@ -679,17 +580,27 @@ class RAGPipeline:
         print("=" * 80 + "\n")
 
     def clear(self):
-        print("[CLEAR] Начало очистки коллекции...")
-        self.client.delete_collection(collection_name=self.collection_name)
-        self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE))
+        print("[CLEAR] Начало очистки коллекции ChromaDB...")
+        try:
+            self.vector_store._client.delete_collection(name=self.collection_name)
+        except Exception as e:
+            print(f"[CLEAR] Предупреждение при удалении коллекции: {e}")
+        self.vector_store = Chroma(
+            collection_name=self.collection_name,
+            persist_directory=self.chroma_persist_directory,
+            embedding_function=self.embeddings,
+        )
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+        self.chain = (
+            {"context": self.retriever | RunnableLambda(self._format_docs), "question": RunnablePassthrough()}
+            | self.prompt
+            | self.llm
+            | StrOutputParser()
+        )
         print("[CLEAR] Коллекция очищена успешно")
         print()
-        
+
     def close(self):
-        print("[CLOSE] Закрытие соединения с Qdrant...")
-        self.client.close()
-        print("[CLOSE] Соединение с Qdrant закрыто")
+        print("[CLOSE] ChromaDB хранит данные на диске, явное закрытие не требуется.")
         print()
     

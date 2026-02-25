@@ -46,8 +46,8 @@ kubernetes==34.1.0
 langchain-classic==1.0.0
 langchain-community==0.4.1
 langchain-core==1.0.7
+langchain-chroma==0.2.3
 langchain-openai==1.0.3
-langchain-qdrant==1.1.0
 langchain-text-splitters==1.0.0
 langsmith==0.4.45
 markdown-it-py==4.0.0
@@ -86,7 +86,6 @@ pyproject_hooks==1.2.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.1
 PyYAML==6.0.3
-qdrant-client==1.16.0
 referencing==0.37.0
 regex==2025.11.3
 requests==2.32.5
