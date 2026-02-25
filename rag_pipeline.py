@@ -23,15 +23,15 @@ class RAGPipeline:
         print()
         print("[INIT] Инициализация RAG Pipeline...")
 
-        # Конфигурация из .env
-        self.collection_name = os.getenv("CHROMA_COLLECTION", "rag_collection")
+        # Конфигурация из .env (все переменные с префиксом OLLAMA_)
+        self.collection_name = os.getenv("OLLAMA_CHROMA_COLLECTION", "rag_collection")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-        self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
+        self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large:latest")
         self.llm_model = os.getenv("OLLAMA_LLM_MODEL", "llama3.2")
-        self.vector_size = int(os.getenv("VECTOR_SIZE", "1024"))  # nomic-embed-text = 1024
-        docs_path = os.getenv("DOCS_PATH", "docs")
-        vectors_path = os.getenv("VECTORS_PATH", "vectors")
-        chroma_persist = os.getenv("CHROMA_PERSIST_DIR", "").strip() or os.path.join(
+        self.vector_size = int(os.getenv("OLLAMA_VECTOR_SIZE", "1024"))  # mxbai-embed-large = 1024
+        docs_path = os.getenv("OLLAMA_DOCS_PATH", "data")
+        vectors_path = os.getenv("OLLAMA_VECTORS_PATH", "vectors")
+        chroma_persist = os.getenv("OLLAMA_CHROMA_PERSIST_DIR", "").strip() or os.path.join(
             os.path.dirname(__file__), vectors_path, "chroma_db"
         )
 
@@ -93,21 +93,25 @@ class RAGPipeline:
 
     def index(self):
         print("[INDEX] Начало индексации документов...")
-        print(f"[INDEX] Чтение файлов из: {self.index_path}")
+        print(f"[INDEX] Чтение файлов из: {self.index_path} (включая подпапки)")
         
         documents = []
-        files = os.listdir(self.index_path)
-        print(f"[INDEX] Найдено файлов: {len(files)}")
+        md_files = []
+        for root, _dirs, files in os.walk(self.index_path):
+            for file in files:
+                if file.endswith(".md"):
+                    file_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(file_path, self.index_path)
+                    md_files.append((file_path, rel_path))
+        print(f"[INDEX] Найдено .md файлов: {len(md_files)}")
         
-        for file in files:
-            if file.endswith(".md"):
-                file_path = os.path.join(self.index_path, file)
-                print(f"[INDEX] Чтение файла: {file}")
-                with open(file_path, "r") as f:
-                    content = f.read()
-                    doc = Document(page_content=content, metadata={"source": file})
-                    documents.append(doc)
-                    print(f"[INDEX] Файл '{file}' прочитан: {len(content)} символов")
+        for file_path, rel_path in md_files:
+            print(f"[INDEX] Чтение файла: {rel_path}")
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                doc = Document(page_content=content, metadata={"source": rel_path})
+                documents.append(doc)
+                print(f"[INDEX] Файл '{rel_path}' прочитан: {len(content)} символов")
         print(f"[INDEX] Всего документов загружено: {len(documents)}")
         print()
 
@@ -274,9 +278,43 @@ class RAGPipeline:
                 print(f"[INDEX]   Content preview: {text.page_content[:50]}...")
         
         print(f"[INDEX] Хешей в метаданных перед записью: {len(hashes_before_write)}/{len(new_texts)}")
-        
-        self.vector_store.add_documents(new_texts)
-        print(f"[INDEX] {len(new_texts)} документов добавлено в векторное хранилище")
+
+        # Лимит символов на один текст (Ollama embed — один текст на запрос, лимит контекста мал)
+        max_chars_per_doc = int(os.getenv("OLLAMA_EMBED_MAX_DOC_CHARS", "500"))
+
+        def trim_doc(d):
+            if len(d.page_content) <= max_chars_per_doc:
+                return [d]
+            out = []
+            start = 0
+            idx = 0
+            base_hash = d.metadata.get("content_hash", "")
+            while start < len(d.page_content):
+                end = start + max_chars_per_doc
+                chunk_content = d.page_content[start:end]
+                meta = dict(d.metadata)
+                meta["_chunk_index"] = idx
+                meta["content_hash"] = hashlib.md5(
+                    (base_hash + str(idx)).encode()
+                ).hexdigest()
+                out.append(Document(page_content=chunk_content, metadata=meta))
+                start = end
+                idx += 1
+            return out
+
+        expanded = []
+        for doc in new_texts:
+            expanded.extend(trim_doc(doc))
+
+        # По одному документу на запрос (Ollama embed не принимает батчи/длинный ввод)
+        total_added = 0
+        report_every = 100
+        for i, doc in enumerate(expanded):
+            self.vector_store.add_documents([doc])
+            total_added += 1
+            if total_added % report_every == 0:
+                print(f"[INDEX] Добавлено: {total_added}/{len(expanded)}")
+        print(f"[INDEX] {total_added} документов добавлено в векторное хранилище")
         
         print("[INDEX] Проверка сохранения хешей в базе...")
         try:
@@ -497,22 +535,24 @@ class RAGPipeline:
             import traceback
             traceback.print_exc()
         
-        print("\n[STATUS] 5. ФАЙЛЫ В ДИРЕКТОРИИ ДОКУМЕНТОВ")
+        print("\n[STATUS] 5. ФАЙЛЫ В ДИРЕКТОРИИ ДОКУМЕНТОВ (включая подпапки)")
         print("-" * 80)
         try:
             if os.path.exists(self.index_path):
-                files = os.listdir(self.index_path)
+                md_files = []
+                for root, _dirs, files in os.walk(self.index_path):
+                    for file in files:
+                        if file.endswith(".md"):
+                            file_path = os.path.join(root, file)
+                            rel_path = os.path.relpath(file_path, self.index_path)
+                            md_files.append((rel_path, file_path))
                 print(f"✓ Директория существует: {self.index_path}")
-                print(f"✓ Найдено файлов: {len(files)}")
-                
+                print(f"✓ Найдено .md файлов: {len(md_files)}")
                 total_size = 0
-                for file in files:
-                    file_path = os.path.join(self.index_path, file)
-                    if os.path.isfile(file_path):
-                        size = os.path.getsize(file_path)
-                        total_size += size
-                        print(f"  - {file}: {size:,} байт ({size/1024:.2f} KB)")
-                
+                for rel_path, file_path in sorted(md_files):
+                    size = os.path.getsize(file_path)
+                    total_size += size
+                    print(f"  - {rel_path}: {size:,} байт ({size/1024:.2f} KB)")
                 print(f"\n  Общий размер: {total_size:,} байт ({total_size/1024:.2f} KB)")
             else:
                 print(f"✗ Директория не существует: {self.index_path}")
