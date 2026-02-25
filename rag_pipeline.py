@@ -2,6 +2,10 @@ import os
 import time
 import textwrap
 import hashlib
+
+from dotenv import load_dotenv
+load_dotenv()
+
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
@@ -20,64 +24,84 @@ class RAGPipeline:
     def __init__(self):
         print()
         print("[INIT] Инициализация RAG Pipeline...")
-        self.index_path = os.path.join(os.path.dirname(__file__), "docs")
-        self.vectors = os.path.join(os.path.dirname(__file__), "vectors")
+
+        # Конфигурация из .env
+        self.qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+        self.collection_name = os.getenv("QDRANT_COLLECTION", "rag_collection")
+        self.embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        self.llm_model = os.getenv("OPENAI_LLM_MODEL", "gpt-3.5-turbo")
+        self.vector_size = int(os.getenv("VECTOR_SIZE", "1536"))
+        docs_path = os.getenv("DOCS_PATH", "docs")
+        vectors_path = os.getenv("VECTORS_PATH", "vectors")
+
+        self.index_path = os.path.join(os.path.dirname(__file__), docs_path)
+        self.vectors = os.path.join(os.path.dirname(__file__), vectors_path)
         print(f"[INIT] Путь к документам: {self.index_path}")
         print(f"[INIT] Путь к векторам: {self.vectors}")
         print()
 
-        print("[INIT] Создание OpenAI Embeddings (text-embedding-3-small)...")
-        self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=os.getenv("OPENAI_API_KEY"))
+        print(f"[INIT] Создание OpenAI Embeddings ({self.embedding_model})...")
+        self.embeddings = OpenAIEmbeddings(
+            model=self.embedding_model,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
 
-        print("[INIT] Подключение к Qdrant (http://localhost:6333)...")
-        self.client = QdrantClient(url="http://localhost:6333")
+        print(f"[INIT] Подключение к Qdrant ({self.qdrant_url})...")
+        self.client = QdrantClient(url=self.qdrant_url)
 
         print("[INIT] Проверка существующих коллекций...")
         collections = self.client.get_collections().collections
         collection_names = [c.name for c in collections]
         print(f"[INIT] Найдено коллекций: {collection_names}")
-        
-        collection_exists = any(c.name == "rag_collection" for c in collections)
-        
+
+        collection_exists = any(c.name == self.collection_name for c in collections)
+
         if collection_exists:
-            print("[INIT] Коллекция 'rag_collection' найдена, проверка конфигурации...")
+            print(f"[INIT] Коллекция '{self.collection_name}' найдена, проверка конфигурации...")
             try:
-                collection_info = self.client.get_collection("rag_collection")
+                collection_info = self.client.get_collection(self.collection_name)
                 vector_size = collection_info.config.params.vectors.size
                 print(f"[INIT] Текущая размерность коллекции: {vector_size}")
-                if vector_size != 1536:
-                    print(f"[INIT] ВНИМАНИЕ: Размерность коллекции ({vector_size}) не соответствует требуемой (1536)")
+                if vector_size != self.vector_size:
+                    print(f"[INIT] ВНИМАНИЕ: Размерность коллекции ({vector_size}) не соответствует требуемой ({self.vector_size})")
                     print("[INIT] Коллекция будет использована, но возможны ошибки при работе с embeddings")
                 else:
                     print("[INIT] Размерность коллекции соответствует требованиям")
-                print("[INIT] Использование существующей коллекции 'rag_collection'")
+                print(f"[INIT] Использование существующей коллекции '{self.collection_name}'")
             except Exception as e:
                 print(f"[INIT] Ошибка при проверке коллекции: {e}")
                 print("[INIT] Будет создана новая коллекция")
                 collection_exists = False
         else:
-            print("[INIT] Коллекция 'rag_collection' не найдена")
+            print(f"[INIT] Коллекция '{self.collection_name}' не найдена")
         if not collection_exists:
-            print("[INIT] Создание коллекции 'rag_collection' с размерностью 1536...")
+            print(f"[INIT] Создание коллекции '{self.collection_name}' с размерностью {self.vector_size}...")
             self.client.create_collection(
-                collection_name="rag_collection",
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE))
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE),
+            )
 
         print("[INIT] Инициализация QdrantVectorStore...")
         self.vector_store = QdrantVectorStore(
             client=self.client,
-            collection_name="rag_collection",
-            embedding=self.embeddings)
+            collection_name=self.collection_name,
+            embedding=self.embeddings,
+        )
 
         print("[INIT] Создание retriever (k=5)...")
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
-        
+
         print("[INIT] Создание PromptTemplate...")
         self.prompt = PromptTemplate.from_template(
-            "Answer the following question based on the context:\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:")
-        
-        print("[INIT] Создание LLM (gpt-3.5-turbo)...")
-        self.llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
+            "Answer the following question based on the context:\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:"
+        )
+
+        print(f"[INIT] Создание LLM ({self.llm_model})...")
+        self.llm = ChatOpenAI(
+            model=self.llm_model,
+            temperature=0,
+            api_key=os.getenv("OPENAI_API_KEY"),
+        )
 
         def format_docs(docs):
             print(f"[FORMAT_DOCS] Получено документов: {len(docs)}")
@@ -170,7 +194,7 @@ class RAGPipeline:
         
         try:
             scroll_result = self.client.scroll(
-                collection_name="rag_collection",
+                collection_name=self.collection_name,
                 limit=10000,
                 with_payload=True,
                 with_vectors=False
@@ -276,7 +300,7 @@ class RAGPipeline:
         print("[INDEX] Проверка сохранения хешей в базе...")
         try:
             scroll_result = self.client.scroll(
-                collection_name="rag_collection",
+                collection_name=self.collection_name,
                 limit=len(new_texts) * 2,
                 with_payload=True,
                 with_vectors=False
@@ -364,7 +388,7 @@ class RAGPipeline:
         print("-" * 80)
         try:
             collections = self.client.get_collections().collections
-            print(f"✓ Подключение к Qdrant установлено (http://localhost:6333)")
+            print(f"✓ Подключение к Qdrant установлено ({self.qdrant_url})")
             print(f"✓ Найдено коллекций: {len(collections)}")
             for col in collections:
                 print(f"  - {col.name}")
@@ -372,10 +396,10 @@ class RAGPipeline:
             print(f"✗ Ошибка подключения к Qdrant: {e}")
             return
         
-        print("\n[STATUS] 2. КОЛЛЕКЦИЯ 'rag_collection'")
+        print(f"\n[STATUS] 2. КОЛЛЕКЦИЯ '{self.collection_name}'")
         print("-" * 80)
         try:
-            collection_info = self.client.get_collection("rag_collection")
+            collection_info = self.client.get_collection(self.collection_name)
             config = collection_info.config
             params = config.params
             
@@ -385,7 +409,7 @@ class RAGPipeline:
             print(f"  Количество шардов: {params.shard_number}")
             print(f"  Фактор репликации: {params.replication_factor}")
             
-            collection_stats = self.client.get_collection("rag_collection")
+            collection_stats = self.client.get_collection(self.collection_name)
             points_count = collection_stats.points_count
             indexed_vectors_count = collection_stats.indexed_vectors_count
             
@@ -407,7 +431,7 @@ class RAGPipeline:
         print("-" * 80)
         try:
             scroll_result = self.client.scroll(
-                collection_name="rag_collection",
+                collection_name=self.collection_name,
                 limit=10,
                 with_payload=True,
                 with_vectors=False
@@ -472,7 +496,7 @@ class RAGPipeline:
                 
                 while True:
                     scroll_result = self.client.scroll(
-                        collection_name="rag_collection",
+                        collection_name=self.collection_name,
                         limit=batch_size,
                         offset=offset,
                         with_payload=True,
@@ -530,7 +554,7 @@ class RAGPipeline:
                             batch_ids = ids_to_delete[i:i + batch_delete_size]
                             try:
                                 self.client.delete(
-                                    collection_name="rag_collection",
+                                    collection_name=self.collection_name,
                                     points_selector=PointIdsList(points=batch_ids)
                                 )
                                 deleted_count += len(batch_ids)
@@ -538,7 +562,7 @@ class RAGPipeline:
                             except (TypeError, AttributeError) as e:
                                 try:
                                     self.client.delete(
-                                        collection_name="rag_collection",
+                                        collection_name=self.collection_name,
                                         points_selector=batch_ids
                                     )
                                     deleted_count += len(batch_ids)
@@ -548,7 +572,7 @@ class RAGPipeline:
                                     for point_id in batch_ids:
                                         try:
                                             self.client.delete(
-                                                collection_name="rag_collection",
+                                                collection_name=self.collection_name,
                                                 points_selector=[point_id]
                                             )
                                             deleted_count += 1
@@ -596,8 +620,8 @@ class RAGPipeline:
         print("\n[STATUS] 6. КОНФИГУРАЦИЯ EMBEDDINGS")
         print("-" * 80)
         try:
-            print(f"✓ Модель: text-embedding-3-small")
-            print(f"✓ Размерность: 1536")
+            print(f"✓ Модель: {self.embedding_model}")
+            print(f"✓ Размерность: {self.vector_size}")
             api_key = os.getenv("OPENAI_API_KEY")
             if api_key:
                 masked_key = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "***"
@@ -610,7 +634,7 @@ class RAGPipeline:
         print("\n[STATUS] 7. КОНФИГУРАЦИЯ LLM")
         print("-" * 80)
         try:
-            print(f"✓ Модель: gpt-3.5-turbo")
+            print(f"✓ Модель: {self.llm_model}")
             print(f"✓ Temperature: 0")
             api_key = os.getenv("OPENAI_API_KEY")
             if api_key:
@@ -656,10 +680,10 @@ class RAGPipeline:
 
     def clear(self):
         print("[CLEAR] Начало очистки коллекции...")
-        self.client.delete_collection(collection_name="rag_collection")
+        self.client.delete_collection(collection_name=self.collection_name)
         self.client.create_collection(
-                collection_name="rag_collection",
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE))
+                collection_name=self.collection_name,
+                vectors_config=VectorParams(size=self.vector_size, distance=Distance.COSINE))
         print("[CLEAR] Коллекция очищена успешно")
         print()
         
