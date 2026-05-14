@@ -114,10 +114,10 @@ Use **`-v` / `--verbose`** before a subcommand for debug-level logging (for exam
 ├── prompts/
 │   └── answer.txt   # Default RAG prompt (`{context}`, `{question}`)
 ├── tests/           # pytest (optional dev extra)
-├── MANIFEST.in      # Ensures `prompts/` is included in sdists
+├── LICENSE          # MIT license text
 ├── .env.example
 ├── .env             # Your config (not committed)
-├── data/            # Markdown docs to index (default; recursive)
+├── data/            # Markdown to index (includes sample_notes.md; subdirs ok)
 └── vectors/         # ChromaDB data (default: vectors/chroma_db)
 ```
 
@@ -129,4 +129,4 @@ Use **`-v` / `--verbose`** before a subcommand for debug-level logging (for exam
 
 ## License
 
-MIT (or your choice).
+Released under the [MIT License](LICENSE). You may use another license for your own fork if you prefer.
