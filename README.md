@@ -49,6 +49,7 @@ cp .env.example .env
 | `OLLAMA_DOCS_PATH` | `data` | Directory with `.md` files (incl. subdirs) |
 | `OLLAMA_VECTORS_PATH` | `vectors` | Base path for vector DB |
 | `OLLAMA_EMBED_MAX_DOC_CHARS` | `500` | Max chars per chunk sent to embed (long texts are split) |
+| `OLLAMA_INDEX_BATCH_SIZE` | `32` | How many chunks to pass per `add_documents` call when indexing |
 
 ## Usage
 

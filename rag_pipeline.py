@@ -226,14 +226,17 @@ class RAGPipeline:
 
         hashes_written = {doc.metadata.get("content_hash") for doc in expanded if doc.metadata.get("content_hash")}
 
-        total_added = 0
-        report_every = 100
-        for doc in expanded:
-            self.vector_store.add_documents([doc])
-            total_added += 1
-            if total_added % report_every == 0:
-                print(f"[INDEX] Added: {total_added}/{len(expanded)}")
-        print(f"[INDEX] Added {total_added} documents")
+        total = len(expanded)
+        batch_size = max(1, int(os.getenv("OLLAMA_INDEX_BATCH_SIZE", "32")))
+        num_batches = (total + batch_size - 1) // batch_size if total else 0
+        log_interval = 1 if num_batches <= 40 else max(1, (num_batches + 19) // 20)
+        print(f"[INDEX] Adding in batches of {batch_size} ({num_batches} batch(es))...")
+        for bi, start in enumerate(range(0, total, batch_size)):
+            end = min(start + batch_size, total)
+            self.vector_store.add_documents(expanded[start:end])
+            if (bi + 1) % log_interval == 0 or end == total:
+                print(f"[INDEX] Added {end}/{total} documents")
+        print(f"[INDEX] Added {total} documents total")
 
         print("[INDEX] Verifying...")
         try:
