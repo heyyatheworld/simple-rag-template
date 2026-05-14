@@ -13,6 +13,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_chroma import Chroma
 
+import dedupe
+
 
 class RAGPipeline:
     """Index Markdown docs into ChromaDB and answer questions using Ollama embeddings + LLM."""
@@ -125,71 +127,29 @@ class RAGPipeline:
 
         print("[INDEX] Checking duplicates...")
 
-        existing_hashes = set()
-        original_existing_hashes = set()
+        existing_hashes: set[str] = set()
+        original_existing_hashes: set[str] = set()
         try:
             result = self.vector_store._collection.get(
                 include=["metadatas"],
                 limit=100000,
             )
-            ids = result.get("ids") or []
             metadatas = result.get("metadatas") or []
-            for i, doc_id in enumerate(ids):
-                meta = metadatas[i] if i < len(metadatas) else {}
-                if not isinstance(meta, dict):
-                    meta = {}
-                inner = meta.get("metadata", meta) if isinstance(meta.get("metadata"), dict) else meta
-                if not isinstance(inner, dict):
-                    inner = meta
-                hash_value = inner.get("content_hash") or meta.get("content_hash")
-                orig = inner.get("original_content_hash") or meta.get("original_content_hash")
-                if hash_value:
-                    existing_hashes.add(hash_value)
-                    original_existing_hashes.add(hash_value)
-                if orig:
-                    existing_hashes.add(orig)
-                    original_existing_hashes.add(orig)
+            existing_hashes, original_existing_hashes = dedupe.existing_hash_sets_from_metadatas(metadatas)
             print(f"[INDEX] Existing documents: {len(existing_hashes)}")
         except Exception as e:
             print(f"[INDEX] Error loading existing: {e}")
             existing_hashes = set()
             original_existing_hashes = set()
-        
-        new_texts = []
-        duplicate_count = 0
-        new_hashes = []
-        for idx, text in enumerate(texts, 1):
-            source = text.metadata.get("source", "unknown")
-            content_hash = hashlib.md5(f"{text.page_content}{source}".encode("utf-8")).hexdigest()
-            text.metadata["content_hash"] = content_hash
-            if content_hash in existing_hashes:
-                duplicate_count += 1
-            else:
-                new_texts.append(text)
-                new_hashes.append({"hash": content_hash, "source": source, "index": idx})
-                existing_hashes.add(content_hash)
-        
+
+        new_texts, new_hashes, duplicate_count = dedupe.mark_hashes_and_split_fresh(texts, existing_hashes)
+        ft, fh, removed = dedupe.strip_hashes_already_in_original_store(
+            new_texts, new_hashes, original_existing_hashes
+        )
+        new_texts, new_hashes = ft, fh
+        duplicate_count += removed
+
         print(f"[INDEX] Duplicates skipped: {duplicate_count}, new to add: {len(new_texts)}")
-        
-        if original_existing_hashes and new_hashes:
-            new_hash_set = {h['hash'] for h in new_hashes}
-            intersection = original_existing_hashes.intersection(new_hash_set)
-            if intersection:
-                new_texts_filtered = []
-                new_hashes_filtered = []
-                removed_count = 0
-                
-                for text, hash_info in zip(new_texts, new_hashes):
-                    if hash_info['hash'] not in intersection:
-                        new_texts_filtered.append(text)
-                        new_hashes_filtered.append(hash_info)
-                    else:
-                        removed_count += 1
-                
-                new_texts = new_texts_filtered
-                new_hashes = new_hashes_filtered
-                duplicate_count += removed_count
-        
         if not new_texts:
             print("[INDEX] All documents already in collection. Skip.")
             return
@@ -457,22 +417,10 @@ class RAGPipeline:
             )
             all_ids = result.get("ids") or []
             all_metadatas = result.get("metadatas") or []
-            hash_to_points = {}
-            for i, doc_id in enumerate(all_ids):
-                meta = all_metadatas[i] if i < len(all_metadatas) else {}
-                if not isinstance(meta, dict):
-                    meta = {}
-                inner = meta.get("metadata", meta)
-                content_hash = (inner.get("content_hash") if isinstance(inner, dict) else None) or meta.get("content_hash")
-                if content_hash:
-                    hash_to_points.setdefault(content_hash, []).append(doc_id)
-            duplicates = {h: lst for h, lst in hash_to_points.items() if len(lst) > 1}
-            if not duplicates:
+            ids_to_delete = dedupe.duplicate_content_hash_extra_ids(all_ids, all_metadatas)
+            if not ids_to_delete:
                 print("[DEDUPE] No duplicates found.")
                 return
-            ids_to_delete = []
-            for _h, id_list in duplicates.items():
-                ids_to_delete.extend(id_list[1:])
             batch_size = 100
             deleted_count = 0
             for i in range(0, len(ids_to_delete), batch_size):
@@ -504,4 +452,3 @@ class RAGPipeline:
     def close(self):
         """No-op; ChromaDB persists to disk."""
         pass
-    

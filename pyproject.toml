@@ -18,5 +18,10 @@ dependencies = [
     "tiktoken>=0.7.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.setuptools]
-py-modules = ["rag_cli", "rag_pipeline"]
+py-modules = ["rag_cli", "rag_pipeline", "dedupe"]

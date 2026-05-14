@@ -30,6 +30,13 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
 ## Configuration
 
 Copy the example env and adjust if needed:
@@ -92,6 +99,8 @@ python rag_cli.py --clear
 ├── requirements-lock.txt
 ├── rag_cli.py       # CLI entry (--index, --query, --status, --dedupe, --clear)
 ├── rag_pipeline.py  # RAG pipeline: load docs, split, embed, ChromaDB, Ollama LLM
+├── dedupe.py        # Content-hash helpers for index dedup and --dedupe
+├── tests/           # pytest (optional dev extra)
 ├── .env.example
 ├── .env             # Your config (not committed)
 ├── data/            # Markdown docs to index (default; recursive)
