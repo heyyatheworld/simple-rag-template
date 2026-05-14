@@ -1,5 +1,2 @@
-python-dotenv>=1.2.0
-langchain-chroma>=0.2.0
-langchain-core>=1.0.0
-langchain-ollama>=0.3.0
-langchain-text-splitters>=1.0.0
+# Pinned transitive dependencies (reproducible installs).
+-r requirements-lock.txt

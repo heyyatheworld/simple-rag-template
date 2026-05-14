@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-rag-template"
+version = "0.1.0"
+description = "Local RAG over Markdown with Ollama and ChromaDB"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "python-dotenv>=1.2.0",
+    "langchain-chroma>=0.2.0",
+    "langchain-core>=1.0.0",
+    "langchain-ollama>=0.3.0",
+    "langchain-text-splitters>=1.0.0",
+    "tiktoken>=0.7.0",
+]
+
+[tool.setuptools]
+py-modules = ["rag_cli", "rag_pipeline"]

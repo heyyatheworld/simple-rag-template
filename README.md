@@ -4,7 +4,7 @@ A minimal RAG (Retrieval-Augmented Generation) pipeline that indexes Markdown do
 
 ## Requirements
 
-- **Python 3.9+**
+- **Python 3.10+**
 - **Ollama** installed and running ([ollama.com](https://ollama.com))
 
 Pull the models used by default:
@@ -22,6 +22,12 @@ cd simple-rag-template
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+`requirements.txt` pulls in `requirements-lock.txt` (fully pinned versions, including **tiktoken** used by the Markdown chunk splitter). To install from declared ranges instead (newer resolver picks), use:
+
+```bash
+pip install -e .
 ```
 
 ## Configuration
@@ -80,9 +86,11 @@ python rag_cli.py --clear
 
 ```
 .
+├── pyproject.toml   # Project metadata and dependency ranges
+├── requirements.txt # Installs pinned set via requirements-lock.txt
+├── requirements-lock.txt
 ├── rag_cli.py       # CLI entry (--index, --query, --status, --dedupe, --clear)
 ├── rag_pipeline.py  # RAG pipeline: load docs, split, embed, ChromaDB, Ollama LLM
-├── requirements.txt
 ├── .env.example
 ├── .env             # Your config (not committed)
 ├── data/            # Markdown docs to index (default; recursive)
@@ -91,7 +99,7 @@ python rag_cli.py --clear
 
 ## How it works
 
-1. **Index**: Reads all `.md` files from `data/` (recursive), splits by Markdown headers and by size (chunk size 1000, overlap 200). Deduplicates by content hash, then embeds via Ollama and stores in ChromaDB. Long chunks are trimmed to `OLLAMA_EMBED_MAX_DOC_CHARS` per embed request.
+1. **Index**: Reads all `.md` files from `data/` (recursive), splits by Markdown headers, then by **token** count (`chunk_size=1000`, `chunk_overlap=200`, `cl100k_base` via tiktoken). Deduplicates by content hash, then embeds via Ollama and stores in ChromaDB. Each piece sent to the embedder is capped at **`OLLAMA_EMBED_MAX_DOC_CHARS` characters** (longer slices are split further before embedding).
 2. **Query**: Embeds the question, retrieves top 5 chunks from ChromaDB, and asks the Ollama LLM to answer from that context.
 3. **Status**: Reports collection stats, sample sources, duplicate check (read-only), docs directory, and Ollama/retriever config. Use **Dedupe** to actually remove duplicate chunks.
 
