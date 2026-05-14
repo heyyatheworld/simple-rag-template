@@ -21,7 +21,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.8.0",
 ]
 
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
 [tool.setuptools]
-py-modules = ["rag_cli", "rag_pipeline", "dedupe", "rag_config"]
+py-modules = ["rag_cli", "rag_pipeline", "dedupe", "rag_config", "rag_logging"]

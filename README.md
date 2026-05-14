@@ -35,6 +35,7 @@ pip install -e .
 ```bash
 pip install -e ".[dev]"
 pytest
+ruff check .
 ```
 
 ## Configuration
@@ -96,6 +97,8 @@ python rag_cli.py --dedupe
 python rag_cli.py --clear
 ```
 
+Use **`-v` / `--verbose`** before a subcommand for debug-level logging (for example `python rag_cli.py -v --index`).
+
 ## Project layout
 
 ```
@@ -106,8 +109,11 @@ python rag_cli.py --clear
 ├── rag_cli.py       # CLI entry (--index, --query, --status, --dedupe, --clear)
 ├── rag_pipeline.py  # RAG pipeline: load docs, split, embed, ChromaDB, Ollama LLM
 ├── rag_config.py    # Env-backed settings (retriever k, chunks, prompt path, …)
+├── rag_logging.py   # Logging setup for CLI and pipeline
+├── dedupe.py        # Content-hash helpers for index dedup and --dedupe
 ├── prompts/
 │   └── answer.txt   # Default RAG prompt (`{context}`, `{question}`)
+├── tests/           # pytest (optional dev extra)
 ├── MANIFEST.in      # Ensures `prompts/` is included in sdists
 ├── .env.example
 ├── .env             # Your config (not committed)

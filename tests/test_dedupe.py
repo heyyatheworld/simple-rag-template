@@ -1,6 +1,7 @@
 """Tests for dedupe helpers (no Chroma / Ollama)."""
-import dedupe
 from langchain_core.documents import Document
+
+import dedupe
 
 
 def test_existing_hash_sets_empty():
