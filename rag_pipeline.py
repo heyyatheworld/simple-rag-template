@@ -14,6 +14,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHea
 from langchain_chroma import Chroma
 
 import dedupe
+import rag_config
 
 
 class RAGPipeline:
@@ -22,20 +23,17 @@ class RAGPipeline:
     def __init__(self):
         print()
         print("[INIT] Initializing RAG Pipeline...")
-        self.collection_name = os.getenv("OLLAMA_CHROMA_COLLECTION", "rag_collection")
-        self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-        self.embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large:latest")
-        self.llm_model = os.getenv("OLLAMA_LLM_MODEL", "llama3.2")
-        self.vector_size = int(os.getenv("OLLAMA_VECTOR_SIZE", "1024"))
-        docs_path = os.getenv("OLLAMA_DOCS_PATH", "data")
-        vectors_path = os.getenv("OLLAMA_VECTORS_PATH", "vectors")
-        chroma_persist = os.getenv("OLLAMA_CHROMA_PERSIST_DIR", "").strip() or os.path.join(
-            os.path.dirname(__file__), vectors_path, "chroma_db"
-        )
-
-        self.index_path = os.path.join(os.path.dirname(__file__), docs_path)
-        self.vectors = os.path.join(os.path.dirname(__file__), vectors_path)
-        self.chroma_persist_directory = chroma_persist
+        _root = os.path.dirname(os.path.abspath(__file__))
+        self.cfg = rag_config.load_rag_config(_root)
+        c = self.cfg
+        self.collection_name = c.collection_name
+        self.ollama_base_url = c.ollama_base_url
+        self.embedding_model = c.embedding_model
+        self.llm_model = c.llm_model
+        self.vector_size = c.vector_size
+        self.index_path = os.path.join(_root, c.docs_path)
+        self.vectors = os.path.join(_root, c.vectors_path)
+        self.chroma_persist_directory = c.chroma_persist_dir
         print(f"[INIT] Docs path: {self.index_path}")
         print(f"[INIT] ChromaDB path: {self.chroma_persist_directory}")
         print()
@@ -54,24 +52,25 @@ class RAGPipeline:
             embedding_function=self.embeddings,
         )
 
-        print("[INIT] Retriever (k=5)")
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+        print(f"[INIT] Retriever (k={c.retriever_k})")
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": c.retriever_k})
 
-        print("[INIT] PromptTemplate")
-        self.prompt = PromptTemplate.from_template(
-            "Answer the following question based on the context:\n\nContext: {context}\n\nQuestion: {question}\n\nAnswer:"
-        )
+        print("[INIT] PromptTemplate (from env / prompts/answer.txt)")
+        self.prompt = PromptTemplate.from_template(c.prompt_template)
 
-        print(f"[INIT] LLM Ollama ({self.llm_model})")
+        print(f"[INIT] LLM Ollama ({self.llm_model}, temperature={c.llm_temperature})")
         self.llm = ChatOllama(
             model=self.llm_model,
-            temperature=0,
+            temperature=c.llm_temperature,
             base_url=self.ollama_base_url,
         )
 
         def format_docs(docs):
-            formatted = "\n\n".join(doc.page_content for doc in docs)
-            return formatted
+            parts = []
+            for doc in docs:
+                src = doc.metadata.get("source", "unknown")
+                parts.append(f"[Source: {src}]\n{doc.page_content}")
+            return "\n\n".join(parts)
 
         self._format_docs = format_docs
         self._qa_chain = self.prompt | self.llm | StrOutputParser()
@@ -116,11 +115,11 @@ class RAGPipeline:
             split_docs.extend(header_splits)
         
         print(f"[INDEX] After header split: {len(split_docs)} sections")
-        
+
         text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-            encoding_name="cl100k_base",
-            chunk_size=1000,
-            chunk_overlap=200,
+            encoding_name=self.cfg.tiktoken_encoding,
+            chunk_size=self.cfg.chunk_size,
+            chunk_overlap=self.cfg.chunk_overlap,
             separators=["\n\n## ", "\n\n", "\n", ". ", " ", ""])
         texts = text_splitter.split_documents(split_docs)
         print(f"[INDEX] Chunks: {len(texts)}")
@@ -155,7 +154,7 @@ class RAGPipeline:
             return
         
         print("[INDEX] Adding to vector store...")
-        max_chars_per_doc = int(os.getenv("OLLAMA_EMBED_MAX_DOC_CHARS", "500"))
+        max_chars_per_doc = self.cfg.embed_max_doc_chars
 
         def trim_doc(d):
             if len(d.page_content) <= max_chars_per_doc:
@@ -187,7 +186,7 @@ class RAGPipeline:
         hashes_written = {doc.metadata.get("content_hash") for doc in expanded if doc.metadata.get("content_hash")}
 
         total = len(expanded)
-        batch_size = max(1, int(os.getenv("OLLAMA_INDEX_BATCH_SIZE", "32")))
+        batch_size = self.cfg.index_batch_size
         num_batches = (total + batch_size - 1) // batch_size if total else 0
         log_interval = 1 if num_batches <= 40 else max(1, (num_batches + 19) // 20)
         print(f"[INDEX] Adding in batches of {batch_size} ({num_batches} batch(es))...")
@@ -375,7 +374,13 @@ class RAGPipeline:
 
         print("\n[STATUS] 7. LLM (Ollama)")
         print("-" * 80)
-        print(f"  Model: {self.llm_model}, temperature: 0")
+        print(f"  Model: {self.llm_model}, temperature: {self.cfg.llm_temperature}")
+
+        print("\n[STATUS] 7b. PROMPT & CHUNKING")
+        print("-" * 80)
+        print(f"  Chunk size / overlap (tokens): {self.cfg.chunk_size} / {self.cfg.chunk_overlap}")
+        print(f"  Tiktoken encoding: {self.cfg.tiktoken_encoding}")
+        print(f"  Embed max chars: {self.cfg.embed_max_doc_chars}, index batch: {self.cfg.index_batch_size}")
         
         print("\n[STATUS] 8. RETRIEVER")
         print("-" * 80)
@@ -446,7 +451,7 @@ class RAGPipeline:
             persist_directory=self.chroma_persist_directory,
             embedding_function=self.embeddings,
         )
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
+        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": self.cfg.retriever_k})
         print("[CLEAR] Done")
 
     def close(self):

@@ -57,6 +57,12 @@ cp .env.example .env
 | `OLLAMA_VECTORS_PATH` | `vectors` | Base path for vector DB |
 | `OLLAMA_EMBED_MAX_DOC_CHARS` | `500` | Max chars per chunk sent to embed (long texts are split) |
 | `OLLAMA_INDEX_BATCH_SIZE` | `32` | How many chunks to pass per `add_documents` call when indexing |
+| `OLLAMA_RETRIEVER_K` | `5` | Number of chunks to retrieve for each query |
+| `OLLAMA_LLM_TEMPERATURE` | `0` | LLM sampling temperature |
+| `OLLAMA_CHUNK_SIZE` | `1000` | Target chunk size in **tokens** (tiktoken) after header split |
+| `OLLAMA_CHUNK_OVERLAP` | `200` | Token overlap between chunks (clamped if ≥ chunk size) |
+| `OLLAMA_TIKTOKEN_ENCODING` | `cl100k_base` | Tiktoken encoding name for the text splitter |
+| `OLLAMA_PROMPT_PATH` | (empty → `prompts/answer.txt`) | Path to a prompt template with `{context}` and `{question}` (relative paths are under the project root) |
 
 ## Usage
 
@@ -99,8 +105,10 @@ python rag_cli.py --clear
 ├── requirements-lock.txt
 ├── rag_cli.py       # CLI entry (--index, --query, --status, --dedupe, --clear)
 ├── rag_pipeline.py  # RAG pipeline: load docs, split, embed, ChromaDB, Ollama LLM
-├── dedupe.py        # Content-hash helpers for index dedup and --dedupe
-├── tests/           # pytest (optional dev extra)
+├── rag_config.py    # Env-backed settings (retriever k, chunks, prompt path, …)
+├── prompts/
+│   └── answer.txt   # Default RAG prompt (`{context}`, `{question}`)
+├── MANIFEST.in      # Ensures `prompts/` is included in sdists
 ├── .env.example
 ├── .env             # Your config (not committed)
 ├── data/            # Markdown docs to index (default; recursive)
@@ -110,7 +118,7 @@ python rag_cli.py --clear
 ## How it works
 
 1. **Index**: Reads all `.md` files from `data/` (recursive), splits by Markdown headers, then by **token** count (`chunk_size=1000`, `chunk_overlap=200`, `cl100k_base` via tiktoken). Deduplicates by content hash, then embeds via Ollama and stores in ChromaDB. Each piece sent to the embedder is capped at **`OLLAMA_EMBED_MAX_DOC_CHARS` characters** (longer slices are split further before embedding).
-2. **Query**: Embeds the question, retrieves top 5 chunks from ChromaDB, and asks the Ollama LLM to answer from that context.
+2. **Query**: Embeds the question, retrieves top **k** chunks from ChromaDB (see `OLLAMA_RETRIEVER_K`), and asks the Ollama LLM to answer using the prompt from `prompts/answer.txt` or `OLLAMA_PROMPT_PATH`. Retrieved passages are prefixed with `[Source: <file>]` for citation.
 3. **Status**: Reports collection stats, sample sources, duplicate check (read-only), docs directory, and Ollama/retriever config. Use **Dedupe** to actually remove duplicate chunks.
 
 ## License

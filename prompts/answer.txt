@@ -1,0 +1,9 @@
+You answer using only the context below. Do not invent facts that are not supported by the context. If the context is insufficient, say so briefly. When you state a fact from the context, name the source file shown in the [Source: …] line for that passage.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
