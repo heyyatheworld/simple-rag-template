@@ -58,10 +58,16 @@ python rag_cli.py --index
 python rag_cli.py --query "What is argparse?"
 ```
 
-**Status** — inspect collection, doc count, duplicates, and config:
+**Status** — read-only: collection, doc count, duplicate report (no writes), and config:
 
 ```bash
 python rag_cli.py --status
+```
+
+**Dedupe** — remove extra chunks that share the same `content_hash` (keeps one per hash):
+
+```bash
+python rag_cli.py --dedupe
 ```
 
 **Clear** the vector collection and start over:
@@ -74,7 +80,7 @@ python rag_cli.py --clear
 
 ```
 .
-├── rag_cli.py       # CLI entry (--index, --query, --status, --clear)
+├── rag_cli.py       # CLI entry (--index, --query, --status, --dedupe, --clear)
 ├── rag_pipeline.py  # RAG pipeline: load docs, split, embed, ChromaDB, Ollama LLM
 ├── requirements.txt
 ├── .env.example
@@ -87,7 +93,7 @@ python rag_cli.py --clear
 
 1. **Index**: Reads all `.md` files from `data/` (recursive), splits by Markdown headers and by size (chunk size 1000, overlap 200). Deduplicates by content hash, then embeds via Ollama and stores in ChromaDB. Long chunks are trimmed to `OLLAMA_EMBED_MAX_DOC_CHARS` per embed request.
 2. **Query**: Embeds the question, retrieves top 5 chunks from ChromaDB, and asks the Ollama LLM to answer from that context.
-3. **Status**: Reports collection stats, sample sources, duplicate check, docs directory, and Ollama/retriever config.
+3. **Status**: Reports collection stats, sample sources, duplicate check (read-only), docs directory, and Ollama/retriever config. Use **Dedupe** to actually remove duplicate chunks.
 
 ## License
 

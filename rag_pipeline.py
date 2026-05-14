@@ -1,6 +1,5 @@
 """RAG pipeline: index Markdown docs into ChromaDB, answer questions via Ollama."""
 import os
-import time
 import textwrap
 import hashlib
 
@@ -11,7 +10,6 @@ from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
 from langchain_chroma import Chroma
 
@@ -74,13 +72,8 @@ class RAGPipeline:
             return formatted
 
         self._format_docs = format_docs
-        print("[INIT] RAG chain ready")
-        self.chain = (
-            {"context": self.retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
-            | self.prompt
-            | self.llm
-            | StrOutputParser()
-        )
+        self._qa_chain = self.prompt | self.llm | StrOutputParser()
+        print("[INIT] QA chain ready (retrieve + prompt + LLM)")
         print("[INIT] Done\n")
 
     def index(self):
@@ -279,15 +272,12 @@ class RAGPipeline:
     def answer(self, query: str) -> str:
         """Run RAG: retrieve context from ChromaDB, then generate answer with LLM."""
         print(f"[ANSWER] Query: {query[:80]}...")
-        response = self.chain.invoke(query)
+        docs = self.retriever.invoke(query)
+        context = self._format_docs(docs)
+        response = self._qa_chain.invoke({"context": context, "question": query})
         print(f"[ANSWER] Response ({len(response)} chars)")
         for line in textwrap.wrap(response, 80):
-            print(f"[ANSWER] ", end="")
-            for char in line:
-                print(char.upper(), end="", flush=True)
-                time.sleep(0.01)
-            print()
-        docs = self.retriever.invoke(query)
+            print(f"[ANSWER] {line}")
         sources = sorted({doc.metadata.get("source", "?") for doc in docs})
         if sources:
             print("[ANSWER] Sources:")
@@ -382,20 +372,9 @@ class RAGPipeline:
                 duplicates = {h: lst for h, lst in hash_to_points.items() if len(lst) > 1}
                 print(f"  With hash: {len(hash_to_points)}, without: {len(points_without_hash)}, duplicate groups: {len(duplicates)}")
                 if duplicates:
-                    ids_to_delete = []
-                    for content_hash, points_list in duplicates.items():
-                        ids_to_delete.extend([p["id"] for p in points_list[1:]])
-                    if ids_to_delete:
-                        batch_size = 100
-                        deleted_count = 0
-                        for i in range(0, len(ids_to_delete), batch_size):
-                            batch_ids = ids_to_delete[i : i + batch_size]
-                            try:
-                                self.vector_store.delete(ids=batch_ids)
-                                deleted_count += len(batch_ids)
-                            except Exception as e:
-                                print(f"  Delete error: {e}")
-                        print(f"  Deleted {deleted_count} duplicates")
+                    dup_chunks = sum(len(lst) - 1 for lst in duplicates.values())
+                    print(f"  Duplicate chunks (beyond first per hash): {dup_chunks}")
+                    print("  (read-only; run --dedupe to remove extras)")
                 else:
                     print("  No duplicates")
         except Exception as e:
@@ -454,6 +433,56 @@ class RAGPipeline:
         print("STATUS DONE")
         print("=" * 80 + "\n")
 
+    def dedupe(self):
+        """Remove duplicate chunks in Chroma (same content_hash), keeping one per hash."""
+        print("[DEDUPE] Scanning collection for duplicate content_hash...")
+        if not hasattr(self, "vector_store") or self.vector_store is None:
+            print("[DEDUPE] Error: ChromaDB not initialized")
+            return
+        try:
+            points_count = self.vector_store._collection.count()
+        except Exception as e:
+            print(f"[DEDUPE] Error: {e}")
+            return
+        if points_count == 0:
+            print("[DEDUPE] Collection empty, nothing to do.")
+            return
+        try:
+            result = self.vector_store._collection.get(
+                include=["metadatas"],
+                limit=100000,
+            )
+            all_ids = result.get("ids") or []
+            all_metadatas = result.get("metadatas") or []
+            hash_to_points = {}
+            for i, doc_id in enumerate(all_ids):
+                meta = all_metadatas[i] if i < len(all_metadatas) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                inner = meta.get("metadata", meta)
+                content_hash = (inner.get("content_hash") if isinstance(inner, dict) else None) or meta.get("content_hash")
+                if content_hash:
+                    hash_to_points.setdefault(content_hash, []).append(doc_id)
+            duplicates = {h: lst for h, lst in hash_to_points.items() if len(lst) > 1}
+            if not duplicates:
+                print("[DEDUPE] No duplicates found.")
+                return
+            ids_to_delete = []
+            for _h, id_list in duplicates.items():
+                ids_to_delete.extend(id_list[1:])
+            batch_size = 100
+            deleted_count = 0
+            for i in range(0, len(ids_to_delete), batch_size):
+                batch_ids = ids_to_delete[i : i + batch_size]
+                try:
+                    self.vector_store.delete(ids=batch_ids)
+                    deleted_count += len(batch_ids)
+                except Exception as e:
+                    print(f"[DEDUPE] Delete error: {e}")
+            print(f"[DEDUPE] Removed {deleted_count} duplicate chunk(s), kept one per hash.")
+        except Exception as e:
+            print(f"[DEDUPE] Error: {e}")
+
     def clear(self):
         """Delete the ChromaDB collection and recreate it empty."""
         print("[CLEAR] Clearing ChromaDB collection...")
@@ -467,12 +496,6 @@ class RAGPipeline:
             embedding_function=self.embeddings,
         )
         self.retriever = self.vector_store.as_retriever(search_kwargs={"k": 5})
-        self.chain = (
-            {"context": self.retriever | RunnableLambda(self._format_docs), "question": RunnablePassthrough()}
-            | self.prompt
-            | self.llm
-            | StrOutputParser()
-        )
         print("[CLEAR] Done")
 
     def close(self):
